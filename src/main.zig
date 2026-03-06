@@ -5,7 +5,7 @@ const Devices = @import("devices.zig").Devices;
 const Output = @import("output.zig").Output;
 
 fn usage() void {
-    std.debug.print("Usage: rvddt [-s <memstart>] [-l <memlen>] [-f memimage]\n", .{});
+    std.debug.print("Usage: ritz [-s <memstart>] [-l <memlen>] [-f memimage]\n", .{});
 }
 
 fn parseIntAuto(text: []const u8) !u64 {
@@ -16,15 +16,27 @@ fn parseIntAuto(text: []const u8) !u64 {
     return std.fmt.parseUnsigned(u64, t, 10);
 }
 
-fn run(cpu: *RV32) !void {
+fn run(cpu: *RV32, count: u64) !void {
     const saved = cpu.setTrace(0);
-    while (!(try cpu.exec())) {}
+    var c = count;
+    var num_instructions: u64 = 0;
+
+    if ( c == 0) {
+        while (!(try cpu.exec())) {num_instructions += 1;}
+    } else {
+        while (c > 0) : (c -= 1) {
+            if (try cpu.exec()) break;
+            num_instructions += 1;
+        }
+    }
+    std.debug.print("g executed {d} instructions\n", .{num_instructions});
+
     _ = cpu.setTrace(saved);
 }
 
-fn cli_g(cpu: *RV32, pc: ?u64) !void {
+fn cli_g(cpu: *RV32, pc: ?u64, count: u64) !void {
     if (pc) |p| cpu.setPc(@bitCast(@as(u32, @truncate(p))));
-    try run(cpu);
+    try run(cpu, count  );
 }
 
 fn cli_t(cpu: *RV32, pc: ?u64, count: u64, regs: bool) !void {
@@ -66,9 +78,9 @@ fn cli(cpu: *RV32, mem: *Memory, out: *Output, allocator: std.mem.Allocator) !vo
 
     _ = allocator;
 
-    try out.print("This is rvddt.  Enter ? for help.\n", .{});
+    try out.print("This is ritz.  Enter ? for help.\n", .{});
     while (running) {
-        try out.print("ddt> ", .{});
+        try out.print("ritz> ", .{});
 
         const line_opt = try in.readUntilDelimiterOrEof(buf[0..], '\n');
         var line: []u8 = undefined;
@@ -126,11 +138,19 @@ fn cli(cpu: *RV32, mem: *Memory, out: *Output, allocator: std.mem.Allocator) !vo
         } else if (std.mem.eql(u8, cmd, "g")) {
             var tok = std.mem.tokenizeAny(u8, args, " \t");
             const a = tok.next();
-            if (a) |v| {
-                try cli_g(cpu, try parseIntAuto(v));
+            const b = tok.next();
+            if (a != null and b != null) {
+                try cli_g(cpu, try parseIntAuto(a.?), try parseIntAuto(b.?));
+            } else if (a != null) {
+                try cli_g(cpu, null, try parseIntAuto(a.?));
             } else {
-                try cli_g(cpu, null);
+                try cli_g(cpu, null, 0);
             }
+
+            // if (a != null and b != null)  {
+            // } else {
+            //     try cli_g(cpu, null);
+            // }
             @memcpy(last[0..line.len], line);
         } else if (std.mem.eql(u8, cmd, "d")) {
             const mw = mem.memoryWarnings;
@@ -170,7 +190,7 @@ fn cli(cpu: *RV32, mem: *Memory, out: *Output, allocator: std.mem.Allocator) !vo
                 "commands:\n" ++
                     "   a                 toggle the display of register ABI and x-names\n" ++
                     "   d [addr [len]]    dump memory starting at addr for len bytes\n" ++
-                    "   g [addr]          set pc=addr and silently execute qty instructions\n" ++
+                    "   g [[addr] qty]    set pc=addr and silently execute qty instructions\n" ++
                     "   r                 dump the contents of the CPU regs\n" ++
                     "   t [[addr] qty]    set pc=addr and trace qty instructions\n" ++
                     "   ti [[addr] qty]   set pc=addr and trace qty instructions w/o reg dumps\n" ++

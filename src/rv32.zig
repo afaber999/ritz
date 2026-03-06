@@ -74,6 +74,14 @@ pub const RV32 = struct {
         return regNames[@intCast(self.regNamesABI)][r];
     }
 
+    fn regU32(self: *RV32, r: u8) u32 {
+        return @as(u32, @bitCast(self.getReg(r)));
+    }
+
+    fn advancePc(self: *RV32) void {
+        self.pc +%= 4;
+    }
+
     pub fn exec(self: *RV32) !bool {
         if (self.pc % 4 != 0) {
             try self.out.print("ERROR: The program counter (0x{X:0>8}) is not a multiple of 4\n", .{self.pc});
@@ -212,7 +220,7 @@ pub const RV32 = struct {
             .{ self.getRegName(rd), @as(u32, @bitCast(imm)) },
         );
         self.setReg(rd, imm);
-        self.pc +%= 4;
+        self.advancePc();
     }
 
     fn execAuipc(self: *RV32, insn: u32) !void {
@@ -226,7 +234,7 @@ pub const RV32 = struct {
             .{ self.getRegName(rd), @as(u32, @bitCast(target)), self.pc, @as(u32, @bitCast(imm)) },
         );
         self.setReg(rd, target);
-        self.pc +%= 4;
+        self.advancePc();
     }
 
     fn execJal(self: *RV32, insn: u32) !void {
@@ -244,524 +252,548 @@ pub const RV32 = struct {
     }
 
     fn execJalr(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmI(insn);
-        const rd = self.getInsnRd(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const target = (self.getReg(rs1) +% imm) & ~@as(i32, 1);
+        const immop = self.getIImmCtx(insn);
+        const target = (self.getReg(immop.rs1) +% immop.imm) & ~@as(i32, 1);
         try self.traceInsnComment(
             "{x:0>8} jalr   {s}, {d}({s})",
-            .{ insn, self.getRegName(rd), imm, self.getRegName(rs1) },
+            .{ insn, self.getRegName(immop.rd), immop.imm, self.getRegName(immop.rs1) },
             "{s} = 0x{x:0>8}, pc = 0x{x:0>8} = {d}(0x{x:0>8})&~1",
-            .{ self.getRegName(rd), self.pc +% 4, @as(u32, @bitCast(target)), imm, @as(u32, @bitCast(self.getReg(rs1))) },
+            .{ self.getRegName(immop.rd), self.pc +% 4, @as(u32, @bitCast(target)), immop.imm, self.regU32(immop.rs1) },
         );
-        self.setReg(rd, @bitCast(self.pc +% 4));
+        self.setReg(immop.rd, @bitCast(self.pc +% 4));
         self.setPc(target);
     }
 
-    fn execBeq(self: *RV32, insn: u32) !void {
+    const BranchCtx = struct {
+        rs1: u8,
+        rs2: u8,
+        taken_target: i32,
+        fallthrough_target: i32,
+    };
+
+    fn getBranchCtx(self: *RV32, insn: u32) BranchCtx {
         const imm = self.getInsnImmB(insn);
         const rs1 = self.getInsnRs1(insn);
         const rs2 = self.getInsnRs2(insn);
-        const ttarget = @as(i32, @bitCast(self.pc)) +% imm;
-        const ftarget = @as(i32, @bitCast(self.pc)) +% 4;
+        const pc_i32 = @as(i32, @bitCast(self.pc));
+        return .{
+            .rs1 = rs1,
+            .rs2 = rs2,
+            .taken_target = pc_i32 +% imm,
+            .fallthrough_target = pc_i32 +% 4,
+        };
+    }
+
+    const ILoadCtx = struct {
+        imm: i32,
+        rs1: u8,
+        rd: u8,
+        addr: u32,
+    };
+
+    fn getILoadCtx(self: *RV32, insn: u32) ILoadCtx {
+        const imm = self.getInsnImmI(insn);
+        const rs1 = self.getInsnRs1(insn);
+        const rd = self.getInsnRd(insn);
+        return .{
+            .imm = imm,
+            .rs1 = rs1,
+            .rd = rd,
+            .addr = @as(u32, @bitCast(self.getReg(rs1) +% imm)),
+        };
+    }
+
+    const IImmCtx = struct {
+        imm: i32,
+        rs1: u8,
+        rd: u8,
+    };
+
+    fn getIImmCtx(self: *RV32, insn: u32) IImmCtx {
+        return .{
+            .imm = self.getInsnImmI(insn),
+            .rs1 = self.getInsnRs1(insn),
+            .rd = self.getInsnRd(insn),
+        };
+    }
+
+    const IShiftCtx = struct {
+        rs1: u8,
+        rd: u8,
+        shamt: u5,
+    };
+
+    fn getIShiftCtx(self: *RV32, insn: u32) IShiftCtx {
+        return .{
+            .rs1 = self.getInsnRs1(insn),
+            .rd = self.getInsnRd(insn),
+            .shamt = @truncate(self.getInsnRs2(insn)),
+        };
+    }
+
+    const SStoreCtx = struct {
+        imm: i32,
+        rs1: u8,
+        rs2: u8,
+        addr: u32,
+    };
+
+    fn getSStoreCtx(self: *RV32, insn: u32) SStoreCtx {
+        const imm = self.getInsnImmS(insn);
+        const rs1 = self.getInsnRs1(insn);
+        const rs2 = self.getInsnRs2(insn);
+        return .{
+            .imm = imm,
+            .rs1 = rs1,
+            .rs2 = rs2,
+            .addr = @as(u32, @bitCast(self.getReg(rs1) +% imm)),
+        };
+    }
+
+    const RTypeCtx = struct {
+        rs1: u8,
+        rs2: u8,
+        rd: u8,
+    };
+
+    fn getRTypeCtx(self: *RV32, insn: u32) RTypeCtx {
+        return .{
+            .rs1 = self.getInsnRs1(insn),
+            .rs2 = self.getInsnRs2(insn),
+            .rd = self.getInsnRd(insn),
+        };
+    }
+
+    const RShiftCtx = struct {
+        rs1: u8,
+        rd: u8,
+        shamt: u5,
+    };
+
+    fn getRShiftCtx(self: *RV32, insn: u32) RShiftCtx {
+        const r = self.getRTypeCtx(insn);
+        return .{
+            .rs1 = r.rs1,
+            .rd = r.rd,
+            .shamt = @truncate(self.regU32(r.rs2) & 0x1f),
+        };
+    }
+
+    fn execBeq(self: *RV32, insn: u32) !void {
+        const branch = self.getBranchCtx(insn);
         try self.traceInsnComment(
             "{x:0>8} beq    {s}, {s}, 0x{x}",
-            .{ insn, self.getRegName(rs1), self.getRegName(rs2), @as(u32, @bitCast(ttarget)) },
+            .{ insn, self.getRegName(branch.rs1), self.getRegName(branch.rs2), @as(u32, @bitCast(branch.taken_target)) },
             "pc = (0x{x} == 0x{x}) ? 0x{x} : 0x{x}",
-            .{ @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))), @as(u32, @bitCast(ttarget)), @as(u32, @bitCast(ftarget)) },
+            .{ @as(u32, @bitCast(self.getReg(branch.rs1))), @as(u32, @bitCast(self.getReg(branch.rs2))), @as(u32, @bitCast(branch.taken_target)), @as(u32, @bitCast(branch.fallthrough_target)) },
         );
-        if (self.getReg(rs1) == self.getReg(rs2)) self.setPc(ttarget) else self.setPc(ftarget);
+        if (self.getReg(branch.rs1) == self.getReg(branch.rs2)) self.setPc(branch.taken_target) else self.setPc(branch.fallthrough_target);
     }
 
     fn execBne(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmB(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const ttarget = @as(i32, @bitCast(self.pc)) +% imm;
-        const ftarget = @as(i32, @bitCast(self.pc)) +% 4;
+        const branch = self.getBranchCtx(insn);
         try self.traceInsnComment(
             "{x:0>8} bne    {s}, {s}, 0x{x}",
-            .{ insn, self.getRegName(rs1), self.getRegName(rs2), @as(u32, @bitCast(ttarget)) },
+            .{ insn, self.getRegName(branch.rs1), self.getRegName(branch.rs2), @as(u32, @bitCast(branch.taken_target)) },
             "pc = (0x{x} != 0x{x}) ? 0x{x} : 0x{x}",
-            .{ @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))), @as(u32, @bitCast(ttarget)), @as(u32, @bitCast(ftarget)) },
+            .{ @as(u32, @bitCast(self.getReg(branch.rs1))), @as(u32, @bitCast(self.getReg(branch.rs2))), @as(u32, @bitCast(branch.taken_target)), @as(u32, @bitCast(branch.fallthrough_target)) },
         );
-        if (self.getReg(rs1) != self.getReg(rs2)) self.setPc(ttarget) else self.setPc(ftarget);
+        if (self.getReg(branch.rs1) != self.getReg(branch.rs2)) self.setPc(branch.taken_target) else self.setPc(branch.fallthrough_target);
     }
 
     fn execBlt(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmB(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const ttarget = @as(i32, @bitCast(self.pc)) +% imm;
-        const ftarget = @as(i32, @bitCast(self.pc)) +% 4;
+        const branch = self.getBranchCtx(insn);
         try self.traceInsnComment(
             "{x:0>8} blt    {s}, {s}, 0x{x}",
-            .{ insn, self.getRegName(rs1), self.getRegName(rs2), @as(u32, @bitCast(ttarget)) },
+            .{ insn, self.getRegName(branch.rs1), self.getRegName(branch.rs2), @as(u32, @bitCast(branch.taken_target)) },
             "pc = (0x{x} < 0x{x}) ? 0x{x} : 0x{x}",
-            .{ @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))), @as(u32, @bitCast(ttarget)), @as(u32, @bitCast(ftarget)) },
+            .{ @as(u32, @bitCast(self.getReg(branch.rs1))), @as(u32, @bitCast(self.getReg(branch.rs2))), @as(u32, @bitCast(branch.taken_target)), @as(u32, @bitCast(branch.fallthrough_target)) },
         );
-        if (self.getReg(rs1) < self.getReg(rs2)) self.setPc(ttarget) else self.setPc(ftarget);
+        if (self.getReg(branch.rs1) < self.getReg(branch.rs2)) self.setPc(branch.taken_target) else self.setPc(branch.fallthrough_target);
     }
 
     fn execBge(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmB(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const ttarget = @as(i32, @bitCast(self.pc)) +% imm;
-        const ftarget = @as(i32, @bitCast(self.pc)) +% 4;
+        const branch = self.getBranchCtx(insn);
         try self.traceInsnComment(
             "{x:0>8} bge    {s}, {s}, 0x{x}",
-            .{ insn, self.getRegName(rs1), self.getRegName(rs2), @as(u32, @bitCast(ttarget)) },
+            .{ insn, self.getRegName(branch.rs1), self.getRegName(branch.rs2), @as(u32, @bitCast(branch.taken_target)) },
             "pc = (0x{x} >= 0x{x}) ? 0x{x} : 0x{x}",
-            .{ @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))), @as(u32, @bitCast(ttarget)), @as(u32, @bitCast(ftarget)) },
+            .{ @as(u32, @bitCast(self.getReg(branch.rs1))), @as(u32, @bitCast(self.getReg(branch.rs2))), @as(u32, @bitCast(branch.taken_target)), @as(u32, @bitCast(branch.fallthrough_target)) },
         );
-        if (self.getReg(rs1) >= self.getReg(rs2)) self.setPc(ttarget) else self.setPc(ftarget);
+        if (self.getReg(branch.rs1) >= self.getReg(branch.rs2)) self.setPc(branch.taken_target) else self.setPc(branch.fallthrough_target);
     }
 
     fn execBltu(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmB(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const ttarget = @as(i32, @bitCast(self.pc)) +% imm;
-        const ftarget = @as(i32, @bitCast(self.pc)) +% 4;
+        const branch = self.getBranchCtx(insn);
         try self.traceInsnComment(
             "{x:0>8} bltu   {s}, {s}, 0x{x}",
-            .{ insn, self.getRegName(rs1), self.getRegName(rs2), @as(u32, @bitCast(ttarget)) },
+            .{ insn, self.getRegName(branch.rs1), self.getRegName(branch.rs2), @as(u32, @bitCast(branch.taken_target)) },
             "pc = (0x{x} < 0x{x}) ? 0x{x} : 0x{x}",
-            .{ @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))), @as(u32, @bitCast(ttarget)), @as(u32, @bitCast(ftarget)) },
+            .{ self.regU32(branch.rs1), self.regU32(branch.rs2), @as(u32, @bitCast(branch.taken_target)), @as(u32, @bitCast(branch.fallthrough_target)) },
         );
-        if (@as(u32, @bitCast(self.getReg(rs1))) < @as(u32, @bitCast(self.getReg(rs2)))) self.setPc(ttarget) else self.setPc(ftarget);
+        if (self.regU32(branch.rs1) < self.regU32(branch.rs2)) self.setPc(branch.taken_target) else self.setPc(branch.fallthrough_target);
     }
 
     fn execBgeu(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmB(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const ttarget = @as(i32, @bitCast(self.pc)) +% imm;
-        const ftarget = @as(i32, @bitCast(self.pc)) +% 4;
+        const branch = self.getBranchCtx(insn);
         try self.traceInsnComment(
             "{x:0>8} bgeu   {s}, {s}, 0x{x}",
-            .{ insn, self.getRegName(rs1), self.getRegName(rs2), @as(u32, @bitCast(ttarget)) },
-            "pc = (0x{x} => 0x{x}) ? 0x{x} : 0x{x}",
-            .{ @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))), @as(u32, @bitCast(ttarget)), @as(u32, @bitCast(ftarget)) },
+            .{ insn, self.getRegName(branch.rs1), self.getRegName(branch.rs2), @as(u32, @bitCast(branch.taken_target)) },
+            "pc = (0x{x} >= 0x{x}) ? 0x{x} : 0x{x}",
+            .{ self.regU32(branch.rs1), self.regU32(branch.rs2), @as(u32, @bitCast(branch.taken_target)), @as(u32, @bitCast(branch.fallthrough_target)) },
         );
-        if (@as(u32, @bitCast(self.getReg(rs1))) >= @as(u32, @bitCast(self.getReg(rs2)))) self.setPc(ttarget) else self.setPc(ftarget);
+        if (self.regU32(branch.rs1) >= self.regU32(branch.rs2)) self.setPc(branch.taken_target) else self.setPc(branch.fallthrough_target);
     }
 
     fn execLb(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmI(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rd = self.getInsnRd(insn);
-        const addr = @as(u32, @bitCast(self.getReg(rs1) +% imm));
-        const m8 = try self.mem.get8(addr);
+        const load = self.getILoadCtx(insn);
+        const m8 = try self.mem.get8(load.addr);
         try self.traceInsnComment(
             "{x:0>8} lb     {s}, {d}({s})",
-            .{ insn, self.getRegName(rd), imm, self.getRegName(rs1) },
+            .{ insn, self.getRegName(load.rd), load.imm, self.getRegName(load.rs1) },
             "{s} = 0x{x:0>8} = {d}(0x{x:0>8})",
-            .{ self.getRegName(rd), @as(u32, @bitCast(@as(i32, m8))), imm, @as(u32, @bitCast(self.getReg(rs1))) },
+            .{ self.getRegName(load.rd), @as(u32, @bitCast(@as(i32, m8))), load.imm, @as(u32, @bitCast(self.getReg(load.rs1))) },
         );
-        self.setReg(rd, m8);
-        self.pc +%= 4;
+        self.setReg(load.rd, m8);
+        self.advancePc();
     }
 
     fn execLh(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmI(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rd = self.getInsnRd(insn);
-        const addr = @as(u32, @bitCast(self.getReg(rs1) +% imm));
-        const m16 = try self.mem.get16(addr);
+        const load = self.getILoadCtx(insn);
+        const m16 = try self.mem.get16(load.addr);
         try self.traceInsnComment(
             "{x:0>8} lh     {s}, {d}({s})",
-            .{ insn, self.getRegName(rd), imm, self.getRegName(rs1) },
+            .{ insn, self.getRegName(load.rd), load.imm, self.getRegName(load.rs1) },
             "{s} = 0x{x:0>8} = {d}(0x{x:0>8})",
-            .{ self.getRegName(rd), @as(u32, @bitCast(@as(i32, m16))), imm, @as(u32, @bitCast(self.getReg(rs1))) },
+            .{ self.getRegName(load.rd), @as(u32, @bitCast(@as(i32, m16))), load.imm, @as(u32, @bitCast(self.getReg(load.rs1))) },
         );
-        self.setReg(rd, m16);
-        self.pc +%= 4;
+        self.setReg(load.rd, m16);
+        self.advancePc();
     }
 
     fn execLw(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmI(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rd = self.getInsnRd(insn);
-        const addr = @as(u32, @bitCast(self.getReg(rs1) +% imm));
-        const m32 = try self.mem.get32(addr);
+        const load = self.getILoadCtx(insn);
+        const m32 = try self.mem.get32(load.addr);
         try self.traceInsnComment(
             "{x:0>8} lw     {s}, {d}({s})",
-            .{ insn, self.getRegName(rd), imm, self.getRegName(rs1) },
+            .{ insn, self.getRegName(load.rd), load.imm, self.getRegName(load.rs1) },
             "{s} = 0x{x:0>8} = {d}(0x{x:0>8})",
-            .{ self.getRegName(rd), @as(u32, @bitCast(m32)), imm, @as(u32, @bitCast(self.getReg(rs1))) },
+            .{ self.getRegName(load.rd), @as(u32, @bitCast(m32)), load.imm, @as(u32, @bitCast(self.getReg(load.rs1))) },
         );
-        self.setReg(rd, m32);
-        self.pc +%= 4;
+        self.setReg(load.rd, m32);
+        self.advancePc();
     }
 
     fn execLbu(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmI(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rd = self.getInsnRd(insn);
-        const addr = @as(u32, @bitCast(self.getReg(rs1) +% imm));
-        const m = @as(i32, @as(u8, @bitCast(try self.mem.get8(addr))));
+        const load = self.getILoadCtx(insn);
+        const m = @as(i32, @as(u8, @bitCast(try self.mem.get8(load.addr))));
         try self.traceInsnComment(
             "{x:0>8} lbu    {s}, {d}({s})",
-            .{ insn, self.getRegName(rd), imm, self.getRegName(rs1) },
+            .{ insn, self.getRegName(load.rd), load.imm, self.getRegName(load.rs1) },
             "{s} = 0x{x:0>8} = {d}(0x{x:0>8})",
-            .{ self.getRegName(rd), @as(u32, @bitCast(m)), imm, @as(u32, @bitCast(self.getReg(rs1))) },
+            .{ self.getRegName(load.rd), @as(u32, @bitCast(m)), load.imm, @as(u32, @bitCast(self.getReg(load.rs1))) },
         );
-        self.setReg(rd, m);
-        self.pc +%= 4;
+        self.setReg(load.rd, m);
+        self.advancePc();
     }
 
     fn execLhu(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmI(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rd = self.getInsnRd(insn);
-        const addr = @as(u32, @bitCast(self.getReg(rs1) +% imm));
-        const m = @as(i32, @as(u16, @bitCast(try self.mem.get16(addr))));
+        const load = self.getILoadCtx(insn);
+        const m = @as(i32, @as(u16, @bitCast(try self.mem.get16(load.addr))));
         try self.traceInsnComment(
             "{x:0>8} lhu    {s}, {d}({s})",
-            .{ insn, self.getRegName(rd), imm, self.getRegName(rs1) },
+            .{ insn, self.getRegName(load.rd), load.imm, self.getRegName(load.rs1) },
             "{s} = 0x{x:0>8} = {d}(0x{x:0>8})",
-            .{ self.getRegName(rd), @as(u32, @bitCast(m)), imm, @as(u32, @bitCast(self.getReg(rs1))) },
+            .{ self.getRegName(load.rd), @as(u32, @bitCast(m)), load.imm, @as(u32, @bitCast(self.getReg(load.rs1))) },
         );
-        self.setReg(rd, m);
-        self.pc +%= 4;
+        self.setReg(load.rd, m);
+        self.advancePc();
     }
 
     fn execSb(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmS(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const addr = @as(u32, @bitCast(self.getReg(rs1) +% imm));
-        const src = @as(u8, @truncate(@as(u32, @bitCast(self.getReg(rs2)))));
+        const store = self.getSStoreCtx(insn);
+        const src = @as(u8, @truncate(@as(u32, @bitCast(self.getReg(store.rs2)))));
         try self.traceInsnComment(
             "{x:0>8} sb     {s}, {d}({s})",
-            .{ insn, self.getRegName(rs2), imm, self.getRegName(rs1) },
+            .{ insn, self.getRegName(store.rs2), store.imm, self.getRegName(store.rs1) },
             "{d}(0x{x:0>8}) = 0x{x:0>8}",
-            .{ imm, @as(u32, @bitCast(self.getReg(rs1))), @as(u32, src) },
+            .{ store.imm, @as(u32, @bitCast(self.getReg(store.rs1))), @as(u32, src) },
         );
-        try self.mem.set8(addr, src);
-        self.pc +%= 4;
+        try self.mem.set8(store.addr, src);
+        self.advancePc();
     }
 
     fn execSh(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmS(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const addr = @as(u32, @bitCast(self.getReg(rs1) +% imm));
-        const src = @as(u16, @truncate(@as(u32, @bitCast(self.getReg(rs2)))));
+        const store = self.getSStoreCtx(insn);
+        const src = @as(u16, @truncate(@as(u32, @bitCast(self.getReg(store.rs2)))));
         try self.traceInsnComment(
             "{x:0>8} sh     {s}, {d}({s})",
-            .{ insn, self.getRegName(rs2), imm, self.getRegName(rs1) },
+            .{ insn, self.getRegName(store.rs2), store.imm, self.getRegName(store.rs1) },
             "{d}(0x{x:0>8}) = 0x{x:0>8}",
-            .{ imm, @as(u32, @bitCast(self.getReg(rs1))), @as(u32, src) },
+            .{ store.imm, @as(u32, @bitCast(self.getReg(store.rs1))), @as(u32, src) },
         );
-        try self.mem.set16(addr, src);
-        self.pc +%= 4;
+        try self.mem.set16(store.addr, src);
+        self.advancePc();
     }
 
     fn execSw(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmS(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const addr = @as(u32, @bitCast(self.getReg(rs1) +% imm));
-        const src: u32 = @bitCast(self.getReg(rs2));
+        const store = self.getSStoreCtx(insn);
+        const src: u32 = @bitCast(self.getReg(store.rs2));
         try self.traceInsnComment(
             "{x:0>8} sw     {s}, {d}({s})",
-            .{ insn, self.getRegName(rs2), imm, self.getRegName(rs1) },
+            .{ insn, self.getRegName(store.rs2), store.imm, self.getRegName(store.rs1) },
             "{d}(0x{x:0>8}) = 0x{x:0>8}",
-            .{ imm, @as(u32, @bitCast(self.getReg(rs1))), src },
+            .{ store.imm, @as(u32, @bitCast(self.getReg(store.rs1))), src },
         );
-        try self.mem.set32(addr, src);
-        self.pc +%= 4;
+        try self.mem.set32(store.addr, src);
+        self.advancePc();
     }
 
     fn execAddi(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmI(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rd = self.getInsnRd(insn);
-        const sum = self.getReg(rs1) +% imm;
+        const immop = self.getIImmCtx(insn);
+        const sum = self.getReg(immop.rs1) +% immop.imm;
         try self.traceInsnComment(
             "{X:0>8} addi   {s}, {s}, {d}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), imm },
+            .{ insn, self.getRegName(immop.rd), self.getRegName(immop.rs1), immop.imm },
             "{s} = 0x{X:0>8} = 0x{X:0>8} + 0x{X:0>8}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(sum)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(imm)) },
+            .{ self.getRegName(immop.rd), @as(u32, @bitCast(sum)), @as(u32, @bitCast(self.getReg(immop.rs1))), @as(u32, @bitCast(immop.imm)) },
         );
-        self.setReg(rd, sum);
-        self.pc +%= 4;
+        self.setReg(immop.rd, sum);
+        self.advancePc();
     }
 
     fn execSlti(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmI(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rd = self.getInsnRd(insn);
-        const cond: i32 = if (self.getReg(rs1) < imm) 1 else 0;
+        const immop = self.getIImmCtx(insn);
+        const cond: i32 = if (self.getReg(immop.rs1) < immop.imm) 1 else 0;
         try self.traceInsnComment(
             "{X:0>8} slti   {s}, {s}, {d}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), imm },
+            .{ insn, self.getRegName(immop.rd), self.getRegName(immop.rs1), immop.imm },
             "{s} = 0x{X:0>8} = (0x{X:0>8} < 0x{X:0>8}) ? 1 : 0",
-            .{ self.getRegName(rd), @as(u32, @bitCast(cond)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(imm)) },
+            .{ self.getRegName(immop.rd), @as(u32, @bitCast(cond)), @as(u32, @bitCast(self.getReg(immop.rs1))), @as(u32, @bitCast(immop.imm)) },
         );
-        self.setReg(rd, cond);
-        self.pc +%= 4;
+        self.setReg(immop.rd, cond);
+        self.advancePc();
     }
 
     fn execSltiu(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmI(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rd = self.getInsnRd(insn);
-        const cond: i32 = if (@as(u32, @bitCast(self.getReg(rs1))) < @as(u32, @bitCast(imm))) 1 else 0;
+        const immop = self.getIImmCtx(insn);
+        const cond: i32 = if (@as(u32, @bitCast(self.getReg(immop.rs1))) < @as(u32, @bitCast(immop.imm))) 1 else 0;
         try self.traceInsnComment(
             "{X:0>8} sltiu  {s}, {s}, {d}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), imm },
+            .{ insn, self.getRegName(immop.rd), self.getRegName(immop.rs1), immop.imm },
             "{s} = 0x{X:0>8} = (0x{X:0>8} < 0x{X:0>8}) ? 1 : 0",
-            .{ self.getRegName(rd), @as(u32, @bitCast(cond)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(imm)) },
+            .{ self.getRegName(immop.rd), @as(u32, @bitCast(cond)), @as(u32, @bitCast(self.getReg(immop.rs1))), @as(u32, @bitCast(immop.imm)) },
         );
-        self.setReg(rd, cond);
-        self.pc +%= 4;
+        self.setReg(immop.rd, cond);
+        self.advancePc();
     }
 
     fn execXori(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmI(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rd = self.getInsnRd(insn);
-        const result = self.getReg(rs1) ^ imm;
+        const immop = self.getIImmCtx(insn);
+        const result = self.getReg(immop.rs1) ^ immop.imm;
         try self.traceInsnComment(
             "{X:0>8} xori   {s}, {s}, {d}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), imm },
+            .{ insn, self.getRegName(immop.rd), self.getRegName(immop.rs1), immop.imm },
             "{s} = 0x{X:0>8} = 0x{X:0>8} ^ 0x{X:0>8}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(imm)) },
+            .{ self.getRegName(immop.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(immop.rs1))), @as(u32, @bitCast(immop.imm)) },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(immop.rd, result);
+        self.advancePc();
     }
 
     fn execOri(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmI(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rd = self.getInsnRd(insn);
-        const result = self.getReg(rs1) | imm;
+        const immop = self.getIImmCtx(insn);
+        const result = self.getReg(immop.rs1) | immop.imm;
         try self.traceInsnComment(
             "{X:0>8} ori    {s}, {s}, {d}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), imm },
+            .{ insn, self.getRegName(immop.rd), self.getRegName(immop.rs1), immop.imm },
             "{s} = 0x{X:0>8} = 0x{X:0>8} | 0x{X:0>8}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(imm)) },
+            .{ self.getRegName(immop.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(immop.rs1))), @as(u32, @bitCast(immop.imm)) },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(immop.rd, result);
+        self.advancePc();
     }
 
     fn execAndi(self: *RV32, insn: u32) !void {
-        const imm = self.getInsnImmI(insn);
-        const rs1 = self.getInsnRs1(insn);
-        const rd = self.getInsnRd(insn);
-        const result = self.getReg(rs1) & imm;
+        const immop = self.getIImmCtx(insn);
+        const result = self.getReg(immop.rs1) & immop.imm;
         try self.traceInsnComment(
             "{X:0>8} andi   {s}, {s}, {d}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), imm },
+            .{ insn, self.getRegName(immop.rd), self.getRegName(immop.rs1), immop.imm },
             "{s} = 0x{X:0>8} = 0x{X:0>8} & 0x{X:0>8}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(imm)) },
+            .{ self.getRegName(immop.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(immop.rs1))), @as(u32, @bitCast(immop.imm)) },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(immop.rd, result);
+        self.advancePc();
     }
 
     fn execSlli(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const shamt: u5 = @truncate(self.getInsnRs2(insn));
-        const rd = self.getInsnRd(insn);
-        const result = self.getReg(rs1) << shamt;
+        const shift = self.getIShiftCtx(insn);
+        const result = self.getReg(shift.rs1) << shift.shamt;
         try self.traceInsnComment(
             "{X:0>8} slli   {s}, {s}, {d}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), shamt },
+            .{ insn, self.getRegName(shift.rd), self.getRegName(shift.rs1), shift.shamt },
             "{s} = 0x{X:0>8} = 0x{X:0>8} << {d}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), shamt },
+            .{ self.getRegName(shift.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(shift.rs1))), shift.shamt },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(shift.rd, result);
+        self.advancePc();
     }
 
     fn execSrli(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const shamt: u5 = @truncate(self.getInsnRs2(insn));
-        const rd = self.getInsnRd(insn);
-        const result: i32 = @bitCast(@as(u32, @bitCast(self.getReg(rs1))) >> shamt);
+        const shift = self.getIShiftCtx(insn);
+        const result: i32 = @bitCast(@as(u32, @bitCast(self.getReg(shift.rs1))) >> shift.shamt);
         try self.traceInsnComment(
             "{X:0>8} srli   {s}, {s}, {d}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), shamt },
+            .{ insn, self.getRegName(shift.rd), self.getRegName(shift.rs1), shift.shamt },
             "{s} = 0x{X:0>8} = 0x{X:0>8} >> {d}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), shamt },
+            .{ self.getRegName(shift.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(shift.rs1))), shift.shamt },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(shift.rd, result);
+        self.advancePc();
     }
 
     fn execSrai(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const shamt: u5 = @truncate(self.getInsnRs2(insn));
-        const rd = self.getInsnRd(insn);
-        const result = self.getReg(rs1) >> shamt;
+        const shift = self.getIShiftCtx(insn);
+        const result = self.getReg(shift.rs1) >> shift.shamt;
         try self.traceInsnComment(
             "{X:0>8} srai   {s}, {s}, {d}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), shamt },
+            .{ insn, self.getRegName(shift.rd), self.getRegName(shift.rs1), shift.shamt },
             "{s} = 0x{X:0>8} = 0x{X:0>8} >> {d}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), shamt },
+            .{ self.getRegName(shift.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(shift.rs1))), shift.shamt },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(shift.rd, result);
+        self.advancePc();
     }
 
     fn execAdd(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const rd = self.getInsnRd(insn);
-        const result = self.getReg(rs1) +% self.getReg(rs2);
+        const r = self.getRTypeCtx(insn);
+        const result = self.getReg(r.rs1) +% self.getReg(r.rs2);
         try self.traceInsnComment(
             "{X:0>8} add    {s}, {s}, {s}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), self.getRegName(rs2) },
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
             "{s} = 0x{X:0>8} = 0x{X:0>8} + 0x{X:0>8}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))) },
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(r.rs1))), @as(u32, @bitCast(self.getReg(r.rs2))) },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(r.rd, result);
+        self.advancePc();
     }
 
     fn execSub(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const rd = self.getInsnRd(insn);
-        const result = self.getReg(rs1) -% self.getReg(rs2);
+        const r = self.getRTypeCtx(insn);
+        const result = self.getReg(r.rs1) -% self.getReg(r.rs2);
         try self.traceInsnComment(
             "{X:0>8} sub    {s}, {s}, {s}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), self.getRegName(rs2) },
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
             "{s} = 0x{X:0>8} = 0x{X:0>8} - 0x{X:0>8}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))) },
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(r.rs1))), @as(u32, @bitCast(self.getReg(r.rs2))) },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(r.rd, result);
+        self.advancePc();
     }
 
     fn execSll(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const rd = self.getInsnRd(insn);
-        const shamt: u5 = @truncate(@as(u32, @bitCast(self.getReg(rs2))) & 0x1f);
-        const result = self.getReg(rs1) << shamt;
+        const shift = self.getRShiftCtx(insn);
+        const result = self.getReg(shift.rs1) << shift.shamt;
         try self.traceInsnComment(
             "{X:0>8} sll    {s}, {s}, {s}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), self.getRegName(rs2) },
+            .{ insn, self.getRegName(shift.rd), self.getRegName(shift.rs1), self.getRegName(self.getInsnRs2(insn)) },
             "{s} = 0x{X:0>8} = 0x{X:0>8} << {d}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), shamt },
+            .{ self.getRegName(shift.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(shift.rs1))), shift.shamt },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(shift.rd, result);
+        self.advancePc();
     }
 
     fn execSlt(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const rd = self.getInsnRd(insn);
-        const result: i32 = if (self.getReg(rs1) < self.getReg(rs2)) 1 else 0;
+        const r = self.getRTypeCtx(insn);
+        const result: i32 = if (self.getReg(r.rs1) < self.getReg(r.rs2)) 1 else 0;
         try self.traceInsnComment(
             "{X:0>8} slt    {s}, {s}, {s}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), self.getRegName(rs2) },
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
             "{s} = 0x{X:0>8} = (0x{X:0>8} < 0x{X:0>8}) ? 1 : 0",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))) },
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(r.rs1))), @as(u32, @bitCast(self.getReg(r.rs2))) },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(r.rd, result);
+        self.advancePc();
     }
 
     fn execSltu(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const rd = self.getInsnRd(insn);
-        const result: i32 = if (@as(u32, @bitCast(self.getReg(rs1))) < @as(u32, @bitCast(self.getReg(rs2)))) 1 else 0;
+        const r = self.getRTypeCtx(insn);
+        const result: i32 = if (@as(u32, @bitCast(self.getReg(r.rs1))) < @as(u32, @bitCast(self.getReg(r.rs2)))) 1 else 0;
         try self.traceInsnComment(
             "{X:0>8} sltu   {s}, {s}, {s}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), self.getRegName(rs2) },
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
             "{s} = 0x{X:0>8} = (0x{X:0>8} < 0x{X:0>8}) ? 1 : 0",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))) },
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(r.rs1))), @as(u32, @bitCast(self.getReg(r.rs2))) },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(r.rd, result);
+        self.advancePc();
     }
 
     fn execXor(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const rd = self.getInsnRd(insn);
-        const result = self.getReg(rs1) ^ self.getReg(rs2);
+        const r = self.getRTypeCtx(insn);
+        const result = self.getReg(r.rs1) ^ self.getReg(r.rs2);
         try self.traceInsnComment(
             "{X:0>8} xor    {s}, {s}, {s}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), self.getRegName(rs2) },
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
             "{s} = 0x{X:0>8} = 0x{X:0>8} ^ 0x{X:0>8}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))) },
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(r.rs1))), @as(u32, @bitCast(self.getReg(r.rs2))) },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(r.rd, result);
+        self.advancePc();
     }
 
     fn execSrl(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const rd = self.getInsnRd(insn);
-        const shamt: u5 = @truncate(@as(u32, @bitCast(self.getReg(rs2))) & 0x1f);
-        const result: i32 = @bitCast(@as(u32, @bitCast(self.getReg(rs1))) >> shamt);
+        const shift = self.getRShiftCtx(insn);
+        const result: i32 = @bitCast(@as(u32, @bitCast(self.getReg(shift.rs1))) >> shift.shamt);
         try self.traceInsnComment(
             "{X:0>8} srl    {s}, {s}, {s}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), self.getRegName(rs2) },
+            .{ insn, self.getRegName(shift.rd), self.getRegName(shift.rs1), self.getRegName(self.getInsnRs2(insn)) },
             "{s} = 0x{X:0>8} = 0x{X:0>8} >> {d}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), shamt },
+            .{ self.getRegName(shift.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(shift.rs1))), shift.shamt },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(shift.rd, result);
+        self.advancePc();
     }
 
     fn execSra(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const rd = self.getInsnRd(insn);
-        const shamt: u5 = @truncate(@as(u32, @bitCast(self.getReg(rs2))) & 0x1f);
-        const result = self.getReg(rs1) >> shamt;
+        const shift = self.getRShiftCtx(insn);
+        const result = self.getReg(shift.rs1) >> shift.shamt;
         try self.traceInsnComment(
             "{X:0>8} sra    {s}, {s}, {s}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), self.getRegName(rs2) },
+            .{ insn, self.getRegName(shift.rd), self.getRegName(shift.rs1), self.getRegName(self.getInsnRs2(insn)) },
             "{s} = 0x{X:0>8} = 0x{X:0>8} >> {d}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), shamt },
+            .{ self.getRegName(shift.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(shift.rs1))), shift.shamt },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(shift.rd, result);
+        self.advancePc();
     }
 
     fn execOr(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const rd = self.getInsnRd(insn);
-        const result = self.getReg(rs1) | self.getReg(rs2);
+        const r = self.getRTypeCtx(insn);
+        const result = self.getReg(r.rs1) | self.getReg(r.rs2);
         try self.traceInsnComment(
             "{X:0>8} or     {s}, {s}, {s}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), self.getRegName(rs2) },
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
             "{s} = 0x{X:0>8} = 0x{X:0>8} | 0x{X:0>8}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))) },
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(r.rs1))), @as(u32, @bitCast(self.getReg(r.rs2))) },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(r.rd, result);
+        self.advancePc();
     }
 
     fn execAnd(self: *RV32, insn: u32) !void {
-        const rs1 = self.getInsnRs1(insn);
-        const rs2 = self.getInsnRs2(insn);
-        const rd = self.getInsnRd(insn);
-        const result = self.getReg(rs1) & self.getReg(rs2);
+        const r = self.getRTypeCtx(insn);
+        const result = self.getReg(r.rs1) & self.getReg(r.rs2);
         try self.traceInsnComment(
             "{X:0>8} and    {s}, {s}, {s}",
-            .{ insn, self.getRegName(rd), self.getRegName(rs1), self.getRegName(rs2) },
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
             "{s} = 0x{X:0>8} = 0x{X:0>8} & 0x{X:0>8}",
-            .{ self.getRegName(rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(rs1))), @as(u32, @bitCast(self.getReg(rs2))) },
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(r.rs1))), @as(u32, @bitCast(self.getReg(r.rs2))) },
         );
-        self.setReg(rd, result);
-        self.pc +%= 4;
+        self.setReg(r.rd, result);
+        self.advancePc();
     }
 
     pub fn getInsnImmI(_: *RV32, insn: u32) i32 {

@@ -30,13 +30,13 @@ zig build --summary all
 zig build run
 ```
 
-You should see a `ddt>` prompt. Quick sanity check:
+You should see a `ritz>` prompt. Quick sanity check:
 
 ```text
-ddt> r
-ddt> t 5
-ddt> d 0x0 0x40
-ddt> x
+ritz> r
+ritz> t 5
+ritz> d 0x0 0x40
+ritz> x
 ```
 
 Load and run a raw memory image:
@@ -45,13 +45,13 @@ Load and run a raw memory image:
 zig build run -- -s 0x0 -l 0x10000 -f program.bin
 ```
 
-Then at `ddt>`:
+Then at `ritz>`:
 
 ```text
-ddt> r
-ddt> t 0x0 10
-ddt> g
-ddt> x
+ritz> r
+ritz> t 0x0 10
+ritz> g
+ritz> x
 ```
 
 Typical workflow is to build a raw RV32 binary image with entry at `0x0`, load it with `-f`, then trace (`t`/`ti`) or run (`g`).
@@ -122,13 +122,13 @@ zig build clean
 
 ## Interactive Commands
 
-At the `ddt>` prompt:
+At the `ritz>` prompt:
 
 - `?` show help
 - `r` dump CPU registers
 - `t [[addr] qty]` trace instructions with register dumps
 - `ti [[addr] qty]` trace instructions without register dumps
-- `g [addr]` run continuously (optionally set `pc` first)
+- `g [[addr] [qty]]` run continuously for qty (optionally set `pc` first), qty = 0 -> execute until break
 - `d [addr [len]]` dump memory
 - `a` toggle register ABI names/x-names display
 - `> filename` redirect output to file (`> -` restores stdout)

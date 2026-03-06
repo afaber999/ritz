@@ -12,14 +12,14 @@
       },
       "program": "${workspaceFolder}/zig-out/bin/ritz.exe",
       "args": [ 
-        "triangle"
+        "-f", "${workspaceFolder}/samples/zig-out/bin/stand03.bin"
        ],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}",
       "environment": [],
       "preLaunchTask": "${defaultBuildTask}",
       "console": "integratedTerminal",
-      "symbolSearchPath": "${workspaceFolder}/bin/Debug/",
+      "symbolSearchPath": "${workspaceFolder}/zig-out/bin/",
     },
     {
       "name": "Debug Attach",
