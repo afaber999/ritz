@@ -68,7 +68,7 @@ Build the project:
 zig build --summary all
 ```
 
-The executable is built as `rvddt`.
+The executable is built as `ritz`.
 
 ## Run
 
@@ -89,6 +89,36 @@ CLI options:
 - `-s <memstart>`: memory start address (decimal or hex like `0x1000`)
 - `-l <memlen>`: memory length in bytes
 - `-f <memimage>`: raw image file to load at `memstart`
+
+## Samples (Top Level)
+
+From the repository root:
+
+```bash
+zig build samples
+```
+
+Builds all sample firmware under `samples/` and generates `.bin`/`.lst` artifacts.
+
+Run samples with the compiled `ritz` emulator:
+
+```bash
+zig build samples-run
+```
+
+Run a specific sample (example: `stand01`):
+
+```bash
+zig build samples-run -Dsample=stand01
+```
+
+## Clean
+
+Remove build/cache contents (directories are kept):
+
+```bash
+zig build clean
+```
 
 ## Interactive Commands
 
