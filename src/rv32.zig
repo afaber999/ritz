@@ -159,11 +159,24 @@ pub const RV32 = struct {
                 0b000 => switch (funct7) {
                     0b0000000 => try self.execAdd(insn),
                     0b0100000 => try self.execSub(insn),
+                    0b0000001 => try self.execMul(insn),
                     else => return self.illegal(),
                 },
-                0b001 => if (funct7 == 0b0000000) try self.execSll(insn) else return self.illegal(),
-                0b010 => if (funct7 == 0b0000000) try self.execSlt(insn) else return self.illegal(),
-                0b011 => if (funct7 == 0b0000000) try self.execSltu(insn) else return self.illegal(),
+                0b001 => switch (funct7) {
+                    0b0000000 => try self.execSll(insn),
+                    0b0000001 => try self.execMulh(insn),
+                    else => return self.illegal(),
+                },
+                0b010 => switch (funct7) {
+                    0b0000000 => try self.execSlt(insn),
+                    0b0000001 => try self.execMulhsu(insn),
+                    else => return self.illegal(),
+                },
+                0b011 => switch (funct7) {
+                    0b0000000 => try self.execSltu(insn),
+                    0b0000001 => try self.execMulhu(insn),
+                    else => return self.illegal(),
+                },
                 0b100 => if (funct7 == 0b0000000) try self.execXor(insn) else return self.illegal(),
                 0b101 => switch (funct7) {
                     0b0000000 => try self.execSrl(insn),
@@ -687,6 +700,64 @@ pub const RV32 = struct {
             .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
             "{s} = 0x{X:0>8} = 0x{X:0>8} - 0x{X:0>8}",
             .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), @as(u32, @bitCast(self.getReg(r.rs1))), @as(u32, @bitCast(self.getReg(r.rs2))) },
+        );
+        self.setReg(r.rd, result);
+        self.advancePc();
+    }
+
+    fn execMul(self: *RV32, insn: u32) !void {
+        const r = self.getRTypeCtx(insn);
+        const result: i32 = @bitCast(self.regU32(r.rs1) *% self.regU32(r.rs2));
+        try self.traceInsnComment(
+            "{X:0>8} mul    {s}, {s}, {s}",
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
+            "{s} = 0x{X:0>8} = low32(0x{X:0>8} * 0x{X:0>8})",
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), self.regU32(r.rs1), self.regU32(r.rs2) },
+        );
+        self.setReg(r.rd, result);
+        self.advancePc();
+    }
+
+    fn execMulh(self: *RV32, insn: u32) !void {
+        const r = self.getRTypeCtx(insn);
+        const prod: i64 = @as(i64, self.getReg(r.rs1)) * @as(i64, self.getReg(r.rs2));
+        const hi_u32: u32 = @truncate(@as(u64, @bitCast(prod)) >> 32);
+        const result: i32 = @bitCast(hi_u32);
+        try self.traceInsnComment(
+            "{X:0>8} mulh   {s}, {s}, {s}",
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
+            "{s} = 0x{X:0>8} = high32(signed(0x{X:0>8}) * signed(0x{X:0>8}))",
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), self.regU32(r.rs1), self.regU32(r.rs2) },
+        );
+        self.setReg(r.rd, result);
+        self.advancePc();
+    }
+
+    fn execMulhsu(self: *RV32, insn: u32) !void {
+        const r = self.getRTypeCtx(insn);
+        const prod: i64 = @as(i64, self.getReg(r.rs1)) * @as(i64, self.regU32(r.rs2));
+        const hi_u32: u32 = @truncate(@as(u64, @bitCast(prod)) >> 32);
+        const result: i32 = @bitCast(hi_u32);
+        try self.traceInsnComment(
+            "{X:0>8} mulhsu {s}, {s}, {s}",
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
+            "{s} = 0x{X:0>8} = high32(signed(0x{X:0>8}) * unsigned(0x{X:0>8}))",
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), self.regU32(r.rs1), self.regU32(r.rs2) },
+        );
+        self.setReg(r.rd, result);
+        self.advancePc();
+    }
+
+    fn execMulhu(self: *RV32, insn: u32) !void {
+        const r = self.getRTypeCtx(insn);
+        const prod: u64 = @as(u64, self.regU32(r.rs1)) * @as(u64, self.regU32(r.rs2));
+        const hi_u32: u32 = @truncate(prod >> 32);
+        const result: i32 = @bitCast(hi_u32);
+        try self.traceInsnComment(
+            "{X:0>8} mulhu  {s}, {s}, {s}",
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
+            "{s} = 0x{X:0>8} = high32(unsigned(0x{X:0>8}) * unsigned(0x{X:0>8}))",
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), self.regU32(r.rs1), self.regU32(r.rs2) },
         );
         self.setReg(r.rd, result);
         self.advancePc();

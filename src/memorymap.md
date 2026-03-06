@@ -22,8 +22,7 @@
 //****************************************************************************
 
 Memory map
-
-	ffff0001-ffff0001	console printer transmit register
+	ffff0000-ffff0000	console printer transmit register
 
 	f0000214-f0000217	memory card status register
 	f0000210-f0000213	memory card control register

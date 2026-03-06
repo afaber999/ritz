@@ -101,6 +101,7 @@ fn addFirmware(
             .root_source_file = b.path(module_root_source_path),
             .target = target,
             .optimize = .ReleaseSmall,
+            .strip = false,
         }),
     });
     if (has_start_asm) {
@@ -258,10 +259,6 @@ pub fn build(b: *std.Build) void {
     var iter = dir.iterate();
     while (iter.next() catch null) |entry| {
         if (entry.kind != .directory) continue;
-        if (!std.mem.startsWith(u8, entry.name, "stand")) continue;
-
-        addCleanDir(b, clean_step, b.fmt("{s}/.zig-cache", .{entry.name}));
-        addCleanDir(b, clean_step, b.fmt("{s}/zig-out", .{entry.name}));
 
         const root_source_path = b.fmt("{s}/src/main.zig", .{entry.name});
         const start_asm_path = b.fmt("{s}/src/start.S", .{entry.name});
@@ -269,6 +266,9 @@ pub fn build(b: *std.Build) void {
         const has_main_zig = fileExists(root_source_path);
         const has_start_asm = fileExists(start_asm_path);
         if (!fileExists(linker_script_path) or (!has_main_zig and !has_start_asm)) continue;
+
+        addCleanDir(b, clean_step, b.fmt("{s}/.zig-cache", .{entry.name}));
+        addCleanDir(b, clean_step, b.fmt("{s}/zig-out", .{entry.name}));
 
         const selected_match = addFirmware(
             b,
@@ -287,7 +287,7 @@ pub fn build(b: *std.Build) void {
     }
 
     if (firmware_count == 0) {
-        std.log.warn("no firmware folders discovered (expected stand*/src/linker.ld + one of src/main.zig or src/start.S)", .{});
+        std.log.warn("no firmware folders discovered (expected <subdir>/src/linker.ld + one of src/main.zig or src/start.S)", .{});
     }
 
     if (run_selection) |selected_name| {

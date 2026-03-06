@@ -62,6 +62,12 @@ Requirements:
 
 - Zig (recent stable version)
 
+Note on tool dependencies:
+
+- The long-term intention is to depend only on the Zig compiler.
+- Due to an `objcopy` bug in Zig `0.15.2`, external RISC-V `objcopy` tools are currently required for sample artifact generation.
+- If assembly listings are desired, an external RISC-V `objdump` tool is also required.
+
 Build the project:
 
 ```bash
