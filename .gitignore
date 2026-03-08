@@ -2,3 +2,5 @@
 zig-out/
 *.o
 *.bin
+*.lst
+*.elf

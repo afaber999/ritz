@@ -115,7 +115,7 @@ zig build samples-run
 Run a specific sample (example: `stand01`):
 
 ```bash
-zig build samples-run -Dsample=stand01
+ zig build samples-run -Dsample=stand01
 ```
 
 ## Clean

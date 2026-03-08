@@ -60,7 +60,7 @@ fn addCleanDir(b: *std.Build, clean_step: *std.Build.Step, dir_path: []const u8)
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const sample_name = b.option([]const u8, "sample", "Sample firmware name for samples-run (for example: stand01)");
+    const sample_name = b.option([]const u8, "sample", "Sample firmware name for run/samples-run (for example: stand01 or stand01.bin)");
 
     const exe = b.addExecutable(.{
         .name = "ritz",
@@ -96,6 +96,12 @@ pub fn build(b: *std.Build) void {
     const samples_build_step = b.step("samples", "Build all sample firmware in samples/");
     samples_build_step.dependOn(&samples_build_cmd.step);
 
+    if (sample_name) |name_raw| {
+        const name = if (std.mem.endsWith(u8, name_raw, ".bin")) name_raw[0 .. name_raw.len - 4] else name_raw;
+        run_cmd.step.dependOn(&samples_build_cmd.step);
+        run_cmd.addArgs(&.{ "-f", b.fmt("samples/zig-out/bin/{s}.bin", .{name}) });
+    }
+
     const samples_run_cmd = b.addSystemCommand(&.{
         "zig",
         "build",
@@ -105,7 +111,8 @@ pub fn build(b: *std.Build) void {
     });
     samples_run_cmd.setCwd(b.path("samples"));
     samples_run_cmd.step.dependOn(b.getInstallStep());
-    if (sample_name) |name| {
+    if (sample_name) |name_raw| {
+        const name = if (std.mem.endsWith(u8, name_raw, ".bin")) name_raw[0 .. name_raw.len - 4] else name_raw;
         samples_run_cmd.addArg(b.fmt("-Dfirmware={s}", .{name}));
     }
 

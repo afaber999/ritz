@@ -7,6 +7,16 @@ pub const RV32 = struct {
     pc: u32 = 0,
     trace: i32 = 1,
     regNamesABI: i32 = 0,
+    reservation_valid: bool = false,
+    reservation_addr: u32 = 0,
+    csr_mstatus: u32 = 0,
+    csr_misa: u32 = (@as(u32, 1) << 30) | (@as(u32, 1) << 8) | (@as(u32, 1) << 12), // RV32 + I + M
+    csr_mtvec: u32 = 0,
+    csr_mcounteren: u32 = 0,
+    csr_mscratch: u32 = 0,
+    csr_mepc: u32 = 0,
+    csr_mcause: u32 = 0,
+    csr_scounteren: u32 = 0,
     mem: *Memory,
     out: *Output,
 
@@ -27,6 +37,15 @@ pub const RV32 = struct {
         self.reg[0] = 0;
         self.trace = 1;
         self.regNamesABI = 0;
+        self.reservation_valid = false;
+        self.reservation_addr = 0;
+        self.csr_mstatus = 0;
+        self.csr_mtvec = 0;
+        self.csr_mcounteren = 0;
+        self.csr_mscratch = 0;
+        self.csr_mepc = 0;
+        self.csr_mcause = 0;
+        self.csr_scounteren = 0;
     }
 
     pub fn dump(self: *RV32) !void {
@@ -134,12 +153,14 @@ pub const RV32 = struct {
                 0b101 => try self.execLhu(insn),
                 else => return self.illegal(),
             },
+            0b0001111 => if (funct3 == 0b000) try self.execFence(insn) else return self.illegal(),
             0b0100011 => switch (funct3) {
                 0b000 => try self.execSb(insn),
                 0b001 => try self.execSh(insn),
                 0b010 => try self.execSw(insn),
                 else => return self.illegal(),
             },
+            0b0101111 => if (funct3 == 0b010) try self.execAtomicW(insn) else return self.illegal(),
             0b0010011 => switch (funct3) {
                 0b000 => try self.execAddi(insn),
                 0b010 => try self.execSlti(insn),
@@ -177,14 +198,36 @@ pub const RV32 = struct {
                     0b0000001 => try self.execMulhu(insn),
                     else => return self.illegal(),
                 },
-                0b100 => if (funct7 == 0b0000000) try self.execXor(insn) else return self.illegal(),
+                0b100 => switch (funct7) {
+                    0b0000000 => try self.execXor(insn),
+                    0b0000001 => try self.execDiv(insn),
+                    else => return self.illegal(),
+                },
                 0b101 => switch (funct7) {
                     0b0000000 => try self.execSrl(insn),
                     0b0100000 => try self.execSra(insn),
+                    0b0000001 => try self.execDivu(insn),
                     else => return self.illegal(),
                 },
-                0b110 => if (funct7 == 0b0000000) try self.execOr(insn) else return self.illegal(),
-                0b111 => if (funct7 == 0b0000000) try self.execAnd(insn) else return self.illegal(),
+                0b110 => switch (funct7) {
+                    0b0000000 => try self.execOr(insn),
+                    0b0000001 => try self.execRem(insn),
+                    else => return self.illegal(),
+                },
+                0b111 => switch (funct7) {
+                    0b0000000 => try self.execAnd(insn),
+                    0b0000001 => try self.execRemu(insn),
+                    else => return self.illegal(),
+                },
+                else => return self.illegal(),
+            },
+            0b1110011 => switch (funct3) {
+                0b001 => try self.execCsrrw(insn),
+                0b010 => try self.execCsrrs(insn),
+                0b011 => try self.execCsrrc(insn),
+                0b101 => try self.execCsrrwi(insn),
+                0b110 => try self.execCsrrsi(insn),
+                0b111 => try self.execCsrrci(insn),
                 else => return self.illegal(),
             },
             else => return self.illegal(),
@@ -533,6 +576,7 @@ pub const RV32 = struct {
             .{ store.imm, @as(u32, @bitCast(self.getReg(store.rs1))), @as(u32, src) },
         );
         try self.mem.set8(store.addr, src);
+        self.reservation_valid = false;
         self.advancePc();
     }
 
@@ -546,6 +590,7 @@ pub const RV32 = struct {
             .{ store.imm, @as(u32, @bitCast(self.getReg(store.rs1))), @as(u32, src) },
         );
         try self.mem.set16(store.addr, src);
+        self.reservation_valid = false;
         self.advancePc();
     }
 
@@ -559,6 +604,122 @@ pub const RV32 = struct {
             .{ store.imm, @as(u32, @bitCast(self.getReg(store.rs1))), src },
         );
         try self.mem.set32(store.addr, src);
+        self.reservation_valid = false;
+        self.advancePc();
+    }
+
+    fn execFence(self: *RV32, insn: u32) !void {
+        try self.traceInsn("{X:0>8} fence", .{insn});
+        self.advancePc();
+    }
+
+    fn getInsnAmoFunct5(_: *RV32, insn: u32) u5 {
+        return @truncate((insn >> 27) & 0x1f);
+    }
+
+    fn execAtomicW(self: *RV32, insn: u32) !void {
+        const r = self.getRTypeCtx(insn);
+        const addr = self.regU32(r.rs1);
+        const funct5 = self.getInsnAmoFunct5(insn);
+
+        switch (funct5) {
+            0b00010 => try self.execLrW(insn, r, addr),
+            0b00011 => try self.execScW(insn, r, addr),
+            0b00000 => try self.execAmoBinaryW(insn, r, addr, "amoadd.w", .add),
+            0b00100 => try self.execAmoBinaryW(insn, r, addr, "amoxor.w", .xor),
+            0b01100 => try self.execAmoBinaryW(insn, r, addr, "amoand.w", .and_op),
+            0b01000 => try self.execAmoBinaryW(insn, r, addr, "amoor.w", .or_op),
+            0b00001 => try self.execAmoBinaryW(insn, r, addr, "amoswap.w", .swap),
+            0b10000 => try self.execAmoBinaryW(insn, r, addr, "amomin.w", .min),
+            0b10100 => try self.execAmoBinaryW(insn, r, addr, "amomax.w", .max),
+            0b11000 => try self.execAmoBinaryW(insn, r, addr, "amominu.w", .minu),
+            0b11100 => try self.execAmoBinaryW(insn, r, addr, "amomaxu.w", .maxu),
+            else => _ = self.illegal(),
+        }
+    }
+
+    const AmoOp = enum {
+        add,
+        xor,
+        and_op,
+        or_op,
+        swap,
+        min,
+        max,
+        minu,
+        maxu,
+    };
+
+    fn execAmoBinaryW(self: *RV32, insn: u32, r: RTypeCtx, addr: u32, mnemonic: []const u8, op: AmoOp) !void {
+        const old = try self.mem.get32(addr);
+        const src = self.getReg(r.rs2);
+
+        const result: i32 = switch (op) {
+            .add => old +% src,
+            .xor => old ^ src,
+            .and_op => old & src,
+            .or_op => old | src,
+            .swap => src,
+            .min => if (old < src) old else src,
+            .max => if (old > src) old else src,
+            .minu => blk: {
+                const old_u: u32 = @bitCast(old);
+                const src_u: u32 = @bitCast(src);
+                break :blk if (old_u < src_u) old else src;
+            },
+            .maxu => blk: {
+                const old_u: u32 = @bitCast(old);
+                const src_u: u32 = @bitCast(src);
+                break :blk if (old_u > src_u) old else src;
+            },
+        };
+
+        try self.traceInsnComment(
+            "{X:0>8} {s: <8}{s}, ({s})",
+            .{ insn, mnemonic, self.getRegName(r.rd), self.getRegName(r.rs1) },
+            "{s}=0x{X:0>8}, mem[0x{X:0>8}]=0x{X:0>8}",
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(old)), addr, @as(u32, @bitCast(result)) },
+        );
+
+        try self.mem.set32(addr, @bitCast(result));
+        self.setReg(r.rd, old);
+        self.reservation_valid = false;
+        self.advancePc();
+    }
+
+    fn execLrW(self: *RV32, insn: u32, r: RTypeCtx, addr: u32) !void {
+        if (r.rs2 != 0) {
+            _ = self.illegal();
+            return;
+        }
+        const old = try self.mem.get32(addr);
+        try self.traceInsnComment(
+            "{X:0>8} lr.w   {s}, ({s})",
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1) },
+            "{s}=0x{X:0>8}, reserve[0x{X:0>8}]",
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(old)), addr },
+        );
+        self.setReg(r.rd, old);
+        self.reservation_valid = true;
+        self.reservation_addr = addr;
+        self.advancePc();
+    }
+
+    fn execScW(self: *RV32, insn: u32, r: RTypeCtx, addr: u32) !void {
+        const can_store = self.reservation_valid and self.reservation_addr == addr;
+        if (can_store) {
+            try self.mem.set32(addr, @bitCast(self.getReg(r.rs2)));
+            self.setReg(r.rd, 0);
+        } else {
+            self.setReg(r.rd, 1);
+        }
+        try self.traceInsnComment(
+            "{X:0>8} sc.w   {s}, {s}, ({s})",
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs2), self.getRegName(r.rs1) },
+            "{s}=0x{X:0>8}",
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(self.getReg(r.rd))) },
+        );
+        self.reservation_valid = false;
         self.advancePc();
     }
 
@@ -763,6 +924,86 @@ pub const RV32 = struct {
         self.advancePc();
     }
 
+    fn execDiv(self: *RV32, insn: u32) !void {
+        const r = self.getRTypeCtx(insn);
+        const dividend = self.getReg(r.rs1);
+        const divisor = self.getReg(r.rs2);
+
+        const result: i32 = if (divisor == 0)
+            -1
+        else if (dividend == std.math.minInt(i32) and divisor == -1)
+            std.math.minInt(i32)
+        else
+            @divTrunc(dividend, divisor);
+
+        try self.traceInsnComment(
+            "{X:0>8} div    {s}, {s}, {s}",
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
+            "{s} = 0x{X:0>8} = signed(0x{X:0>8}) / signed(0x{X:0>8})",
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), self.regU32(r.rs1), self.regU32(r.rs2) },
+        );
+        self.setReg(r.rd, result);
+        self.advancePc();
+    }
+
+    fn execDivu(self: *RV32, insn: u32) !void {
+        const r = self.getRTypeCtx(insn);
+        const dividend = self.regU32(r.rs1);
+        const divisor = self.regU32(r.rs2);
+
+        const result_u32: u32 = if (divisor == 0) 0xffffffff else @divTrunc(dividend, divisor);
+        const result: i32 = @bitCast(result_u32);
+
+        try self.traceInsnComment(
+            "{X:0>8} divu   {s}, {s}, {s}",
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
+            "{s} = 0x{X:0>8} = unsigned(0x{X:0>8}) / unsigned(0x{X:0>8})",
+            .{ self.getRegName(r.rd), result_u32, self.regU32(r.rs1), self.regU32(r.rs2) },
+        );
+        self.setReg(r.rd, result);
+        self.advancePc();
+    }
+
+    fn execRem(self: *RV32, insn: u32) !void {
+        const r = self.getRTypeCtx(insn);
+        const dividend = self.getReg(r.rs1);
+        const divisor = self.getReg(r.rs2);
+
+        const result: i32 = if (divisor == 0)
+            dividend
+        else if (dividend == std.math.minInt(i32) and divisor == -1)
+            0
+        else
+            @rem(dividend, divisor);
+
+        try self.traceInsnComment(
+            "{X:0>8} rem    {s}, {s}, {s}",
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
+            "{s} = 0x{X:0>8} = signed(0x{X:0>8}) % signed(0x{X:0>8})",
+            .{ self.getRegName(r.rd), @as(u32, @bitCast(result)), self.regU32(r.rs1), self.regU32(r.rs2) },
+        );
+        self.setReg(r.rd, result);
+        self.advancePc();
+    }
+
+    fn execRemu(self: *RV32, insn: u32) !void {
+        const r = self.getRTypeCtx(insn);
+        const dividend = self.regU32(r.rs1);
+        const divisor = self.regU32(r.rs2);
+
+        const result_u32: u32 = if (divisor == 0) dividend else @rem(dividend, divisor);
+        const result: i32 = @bitCast(result_u32);
+
+        try self.traceInsnComment(
+            "{X:0>8} remu   {s}, {s}, {s}",
+            .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1), self.getRegName(r.rs2) },
+            "{s} = 0x{X:0>8} = unsigned(0x{X:0>8}) % unsigned(0x{X:0>8})",
+            .{ self.getRegName(r.rd), result_u32, self.regU32(r.rs1), self.regU32(r.rs2) },
+        );
+        self.setReg(r.rd, result);
+        self.advancePc();
+    }
+
     fn execSll(self: *RV32, insn: u32) !void {
         const shift = self.getRShiftCtx(insn);
         const result = self.getReg(shift.rs1) << shift.shamt;
@@ -867,6 +1108,177 @@ pub const RV32 = struct {
         self.advancePc();
     }
 
+    fn execCsrrw(self: *RV32, insn: u32) !void {
+        const r = self.getRTypeCtx(insn);
+        const csr = self.getInsnCsr(insn);
+        const old = self.csrRead(csr) orelse {
+            _ = self.illegal();
+            return;
+        };
+        if (!self.csrWrite(csr, self.regU32(r.rs1))) {
+            _ = self.illegal();
+            return;
+        }
+        try self.traceInsnComment(
+            "{X:0>8} csrrw  {s}, 0x{X:0>3}, {s}",
+            .{ insn, self.getRegName(r.rd), csr, self.getRegName(r.rs1) },
+            "{s} = 0x{X:0>8}, csr[0x{X:0>3}] = 0x{X:0>8}",
+            .{ self.getRegName(r.rd), old, csr, self.regU32(r.rs1) },
+        );
+        self.setReg(r.rd, @bitCast(old));
+        self.advancePc();
+    }
+
+    fn execCsrrs(self: *RV32, insn: u32) !void {
+        const r = self.getRTypeCtx(insn);
+        const csr = self.getInsnCsr(insn);
+        const old = self.csrRead(csr) orelse {
+            _ = self.illegal();
+            return;
+        };
+        if (r.rs1 != 0) {
+            if (!self.csrWrite(csr, old | self.regU32(r.rs1))) {
+                _ = self.illegal();
+                return;
+            }
+        }
+        try self.traceInsnComment(
+            "{X:0>8} csrrs  {s}, 0x{X:0>3}, {s}",
+            .{ insn, self.getRegName(r.rd), csr, self.getRegName(r.rs1) },
+            "{s} = 0x{X:0>8}",
+            .{ self.getRegName(r.rd), old },
+        );
+        self.setReg(r.rd, @bitCast(old));
+        self.advancePc();
+    }
+
+    fn execCsrrc(self: *RV32, insn: u32) !void {
+        const r = self.getRTypeCtx(insn);
+        const csr = self.getInsnCsr(insn);
+        const old = self.csrRead(csr) orelse {
+            _ = self.illegal();
+            return;
+        };
+        if (r.rs1 != 0) {
+            if (!self.csrWrite(csr, old & ~self.regU32(r.rs1))) {
+                _ = self.illegal();
+                return;
+            }
+        }
+        try self.traceInsnComment(
+            "{X:0>8} csrrc  {s}, 0x{X:0>3}, {s}",
+            .{ insn, self.getRegName(r.rd), csr, self.getRegName(r.rs1) },
+            "{s} = 0x{X:0>8}",
+            .{ self.getRegName(r.rd), old },
+        );
+        self.setReg(r.rd, @bitCast(old));
+        self.advancePc();
+    }
+
+    fn execCsrrwi(self: *RV32, insn: u32) !void {
+        const rd = self.getInsnRd(insn);
+        const zimm = self.getInsnRs1(insn);
+        const csr = self.getInsnCsr(insn);
+        const old = self.csrRead(csr) orelse {
+            _ = self.illegal();
+            return;
+        };
+        if (!self.csrWrite(csr, zimm)) {
+            _ = self.illegal();
+            return;
+        }
+        try self.traceInsnComment(
+            "{X:0>8} csrrwi {s}, 0x{X:0>3}, {d}",
+            .{ insn, self.getRegName(rd), csr, zimm },
+            "{s} = 0x{X:0>8}, csr[0x{X:0>3}] = 0x{X:0>8}",
+            .{ self.getRegName(rd), old, csr, zimm },
+        );
+        self.setReg(rd, @bitCast(old));
+        self.advancePc();
+    }
+
+    fn execCsrrsi(self: *RV32, insn: u32) !void {
+        const rd = self.getInsnRd(insn);
+        const zimm = self.getInsnRs1(insn);
+        const csr = self.getInsnCsr(insn);
+        const old = self.csrRead(csr) orelse {
+            _ = self.illegal();
+            return;
+        };
+        if (zimm != 0) {
+            if (!self.csrWrite(csr, old | zimm)) {
+                _ = self.illegal();
+                return;
+            }
+        }
+        try self.traceInsnComment(
+            "{X:0>8} csrrsi {s}, 0x{X:0>3}, {d}",
+            .{ insn, self.getRegName(rd), csr, zimm },
+            "{s} = 0x{X:0>8}",
+            .{ self.getRegName(rd), old },
+        );
+        self.setReg(rd, @bitCast(old));
+        self.advancePc();
+    }
+
+    fn execCsrrci(self: *RV32, insn: u32) !void {
+        const rd = self.getInsnRd(insn);
+        const zimm = self.getInsnRs1(insn);
+        const csr = self.getInsnCsr(insn);
+        const old = self.csrRead(csr) orelse {
+            _ = self.illegal();
+            return;
+        };
+        if (zimm != 0) {
+            if (!self.csrWrite(csr, old & ~zimm)) {
+                _ = self.illegal();
+                return;
+            }
+        }
+        try self.traceInsnComment(
+            "{X:0>8} csrrci {s}, 0x{X:0>3}, {d}",
+            .{ insn, self.getRegName(rd), csr, zimm },
+            "{s} = 0x{X:0>8}",
+            .{ self.getRegName(rd), old },
+        );
+        self.setReg(rd, @bitCast(old));
+        self.advancePc();
+    }
+
+    fn csrRead(self: *RV32, csr: u12) ?u32 {
+        return switch (csr) {
+            0x300 => self.csr_mstatus,
+            0x301 => self.csr_misa,
+            0x305 => self.csr_mtvec,
+            0x306 => self.csr_mcounteren,
+            0x340 => self.csr_mscratch,
+            0x341 => self.csr_mepc,
+            0x342 => self.csr_mcause,
+            0x106 => self.csr_scounteren,
+            0xC00 => 0, // cycle
+            0xF11 => 0, // mvendorid
+            0xF12 => 0, // marchid
+            0xF13 => 0, // mimpid
+            0xF14 => 0, // mhartid
+            else => null,
+        };
+    }
+
+    fn csrWrite(self: *RV32, csr: u12, value: u32) bool {
+        switch (csr) {
+            0x300 => self.csr_mstatus = value,
+            0x305 => self.csr_mtvec = value,
+            0x306 => self.csr_mcounteren = value,
+            0x340 => self.csr_mscratch = value,
+            0x341 => self.csr_mepc = value,
+            0x342 => self.csr_mcause = value,
+            0x106 => self.csr_scounteren = value,
+            0xC00, 0x301, 0xF11, 0xF12, 0xF13, 0xF14 => return false,
+            else => return false,
+        }
+        return true;
+    }
+
     pub fn getInsnImmI(_: *RV32, insn: u32) i32 {
         return @bitCast(@as(i32, @bitCast(insn)) >> 20);
     }
@@ -917,5 +1329,9 @@ pub const RV32 = struct {
 
     pub fn getInsnFunct7(_: *RV32, insn: u32) u8 {
         return @truncate((insn & 0xfe000000) >> 25);
+    }
+
+    pub fn getInsnCsr(_: *RV32, insn: u32) u12 {
+        return @truncate((insn >> 20) & 0x0fff);
     }
 };
