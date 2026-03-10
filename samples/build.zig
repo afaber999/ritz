@@ -57,6 +57,54 @@ fn fileExists(path: []const u8) bool {
     return true;
 }
 
+const SampleRunConfig = struct {
+    memoffset: []const u8 = "0x000",
+    memlen: []const u8 = "0x2000",
+    autorun: ?[]const u8 = null,
+};
+
+fn isFalseLike(value: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(value, "0") or
+        std.ascii.eqlIgnoreCase(value, "false") or
+        std.ascii.eqlIgnoreCase(value, "off") or
+        std.ascii.eqlIgnoreCase(value, "no");
+}
+
+fn loadSampleRunConfig(b: *std.Build, firmware_name: []const u8) SampleRunConfig {
+    var cfg = SampleRunConfig{};
+    const cfg_path = b.fmt("{s}/ritz.ini", .{firmware_name});
+
+    var file = std.fs.cwd().openFile(cfg_path, .{}) catch return cfg;
+    defer file.close();
+
+    const text = file.readToEndAlloc(b.allocator, 16 * 1024) catch return cfg;
+
+    var lines = std.mem.tokenizeAny(u8, text, "\r\n");
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t");
+        if (line.len == 0) continue;
+        if (line[0] == '#' or line[0] == ';') continue;
+
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        const value = std.mem.trim(u8, line[eq + 1 ..], " \t");
+
+        if (std.mem.eql(u8, key, "memoffset")) {
+            if (value.len != 0) cfg.memoffset = b.dupe(value);
+        } else if (std.mem.eql(u8, key, "memlen")) {
+            if (value.len != 0) cfg.memlen = b.dupe(value);
+        } else if (std.mem.eql(u8, key, "autorun")) {
+            if (value.len == 0 or isFalseLike(value)) {
+                cfg.autorun = null;
+            } else {
+                cfg.autorun = b.dupe(value);
+            }
+        }
+    }
+
+    return cfg;
+}
+
 fn findFirstProgram(
     b: *std.Build,
     candidates: []const []const u8,
@@ -102,6 +150,7 @@ fn addFirmware(
             .target = target,
             .optimize = .ReleaseSmall,
             .strip = false,
+            .pic = false,
         }),
     });
     if (has_start_asm) {
@@ -147,13 +196,25 @@ fn addFirmware(
         copy_lst_step = &install_lst.step;
     }
 
-    const ritz_exe = b.addSystemCommand(&.{
-        "..\\zig-out\\bin\\ritz.exe",
-        "-l",
-        "0x2000",
-        "-f",
-        b.fmt(".\\zig-out\\bin\\{s}.bin", .{firmware_name}),
-    });
+    const run_cfg = loadSampleRunConfig(b, firmware_name);
+    const fw_bin_path = b.fmt(".\\zig-out\\bin\\{s}.bin", .{firmware_name});
+
+    const ritz_exe = if (run_cfg.autorun) |autorun_cmd|
+        b.addSystemCommand(&.{
+            "cmd.exe",
+            "/C",
+            b.fmt("(echo {s}) | ..\\zig-out\\bin\\ritz.exe -s {s} -l {s} -f {s}", .{ autorun_cmd, run_cfg.memoffset, run_cfg.memlen, fw_bin_path }),
+        })
+    else
+        b.addSystemCommand(&.{
+            "..\\zig-out\\bin\\ritz.exe",
+            "-s",
+            run_cfg.memoffset,
+            "-l",
+            run_cfg.memlen,
+            "-f",
+            fw_bin_path,
+        });
     if (copy_bin_step) |step| {
         ritz_exe.step.dependOn(step);
     } else {

@@ -8,6 +8,7 @@ _start:
 .option push
 .option norelax
 	la		gp,__global_pointer$
+	la		sp,_sstack  
 .option pop
 
     # Clear the bss segment

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const CleanDirContentsStep = struct {
     step: std.Build.Step,
@@ -72,6 +73,16 @@ pub fn build(b: *std.Build) void {
     });
 
     b.installArtifact(exe);
+
+    // Work around intermittent zero-byte installed exe on Windows by forcing
+    // a direct copy from the emitted binary into zig-out/bin.
+    if (builtin.os.tag == .windows) {
+        const install_fix = b.addSystemCommand(&.{ "cmd", "/C", "copy", "/Y" });
+        install_fix.addFileArg(exe.getEmittedBin());
+        install_fix.addArg("zig-out\\bin\\ritz.exe");
+        install_fix.step.dependOn(&exe.step);
+        b.getInstallStep().dependOn(&install_fix.step);
+    }
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

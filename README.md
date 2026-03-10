@@ -166,5 +166,4 @@ At the `ritz>` prompt:
 - Like original `rvddt`, this is primarily a static debugging workflow (no interactive register/memory editing commands).
 
 
-
->.\zig-out\bin\ritz.exe -l 0x20000 -f .\tests\firmware\firmware.bin
+.\zig-out\bin\ritz.exe -l 0x20000 -f .\tests\firmware\firmware.bin

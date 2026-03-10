@@ -1,8 +1,11 @@
 const std = @import("std");
 const Memory = @import("memory.zig").Memory;
-const RV32 = @import("rv32.zig").RV32;
+const RV32Type = @import("rv32.zig").RV32Type;
 const Devices = @import("devices.zig").Devices;
 const Output = @import("output.zig").Output;
+
+pub const RV32 = RV32Type(Memory);
+
 
 fn usage() void {
     std.debug.print("Usage: ritz [-s <memstart>] [-l <memlen>] [-f memimage]\n", .{});
@@ -73,7 +76,7 @@ fn cli(cpu: *RV32, mem: *Memory, out: *Output, allocator: std.mem.Allocator) !vo
     var running = true;
     var buf: [2048]u8 = [_]u8{0} ** 2048;
     var last: [2048]u8 = [_]u8{0} ** 2048;
-    var d_next: u64 = 0;
+    var d_next: u64 = mem.start;
     const echo = !stdin_file.isTty();
 
     _ = allocator;
@@ -251,6 +254,7 @@ pub fn main() !u8 {
 
     var mem = try Memory.init(allocator, memstart, memlen, &dev, &out);
     defer mem.deinit();
+
 
     var cpu = RV32.init(&mem, &out);
 
