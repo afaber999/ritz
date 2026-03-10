@@ -115,8 +115,25 @@ zig build samples-run
 Run a specific sample (example: `stand01`):
 
 ```bash
- zig build samples-run -Dsample=stand01
+zig build samples-run -Dsample=stand01
 ```
+
+## Tests (Top Level)
+
+From the repository root, use the top-level test steps:
+
+```bash
+zig build tests
+zig build tests-run
+zig build tests-clean
+```
+
+These steps delegate to `tests/build.zig` internally and avoid shell-specific path issues.
+
+Note about direct sub-build usage:
+
+- Preferred: `zig build tests-run` and `zig build tests-clean`
+- Avoid relying on `zig build --build-file tests/build.zig ...` unless you are intentionally working inside the tests build script.
 
 ## Clean
 
@@ -147,3 +164,7 @@ At the `ritz>` prompt:
 - Focus is RV32I-style execution and interactive tracing/debugging.
 - Execution stops on illegal instructions or `ebreak`.
 - Like original `rvddt`, this is primarily a static debugging workflow (no interactive register/memory editing commands).
+
+
+
+>.\zig-out\bin\ritz.exe -l 0x20000 -f .\tests\firmware\firmware.bin

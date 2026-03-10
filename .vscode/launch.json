@@ -12,7 +12,7 @@
       },
       "program": "${workspaceFolder}/zig-out/bin/ritz.exe",
       "args": [ 
-        "-f", "${workspaceFolder}/samples/zig-out/bin/stand03.bin"
+        "-f", "${workspaceFolder}/samples/zig-out/bin/torture.bin"
        ],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}",

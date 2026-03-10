@@ -88,7 +88,7 @@ pub fn build(b: *std.Build) void {
         "--build-file",
         "build.zig",
         "--summary",
-        "all",
+        "none",
     });
     samples_build_cmd.setCwd(b.path("samples"));
     samples_build_cmd.step.dependOn(b.getInstallStep());
@@ -118,6 +118,43 @@ pub fn build(b: *std.Build) void {
 
     const samples_run_step = b.step("samples-run", "Build and run sample firmware via compiled ritz");
     samples_run_step.dependOn(&samples_run_cmd.step);
+
+    const tests_build_cmd = b.addSystemCommand(&.{
+        "zig",
+        "build",
+        "--summary",
+        "none",
+    });
+    tests_build_cmd.setCwd(b.path("tests"));
+    tests_build_cmd.step.dependOn(b.getInstallStep());
+
+    const tests_step = b.step("tests", "Build tests firmware in tests/");
+    tests_step.dependOn(&tests_build_cmd.step);
+
+    const tests_run_cmd = b.addSystemCommand(&.{
+        "zig",
+        "build",
+        "run",
+        "--summary",
+        "none",
+    });
+    tests_run_cmd.setCwd(b.path("tests"));
+    tests_run_cmd.step.dependOn(&tests_build_cmd.step);
+
+    const tests_run_step = b.step("tests-run", "Build and run tests firmware via compiled ritz");
+    tests_run_step.dependOn(&tests_run_cmd.step);
+
+    const tests_clean_cmd = b.addSystemCommand(&.{
+        "zig",
+        "build",
+        "clean",
+        "--summary",
+        "none",
+    });
+    tests_clean_cmd.setCwd(b.path("tests"));
+
+    const tests_clean_step = b.step("tests-clean", "Clean generated tests artifacts in tests/");
+    tests_clean_step.dependOn(&tests_clean_cmd.step);
 
     const clean_step = b.step("clean", "Delete contents of cache/output directories");
     addCleanDir(b, clean_step, ".zig-cache");
