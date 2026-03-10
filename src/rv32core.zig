@@ -1,11 +1,7 @@
 ﻿const std = @import("std");
 const Output = @import("output.zig").Output;
 
-fn intCastCompat(comptime T:type, value:anytype) T {
-    return @as(T, @intCast(value));
-}
-
-pub fn RV32Type(comptime MemType: type) type {
+pub fn RV32CoreType(comptime MachineType: type) type {
     return struct {
     const Self = @This();
 
@@ -15,27 +11,16 @@ pub fn RV32Type(comptime MemType: type) type {
     regNamesABI: i32 = 0,
     reservation_valid: bool = false,
     reservation_addr: u32 = 0,
-    csr_mstatus: u32 = 0,
-    csr_misa: u32 = (@as(u32, 1) << 30) | (@as(u32, 1) << 8) | (@as(u32, 1) << 12), // RV32 + I + M
-    csr_mtvec: u32 = 0,
-    csr_mcounteren: u32 = 0,
-    csr_mscratch: u32 = 0,
-    csr_mepc: u32 = 0,
-    csr_mcause: u32 = 0,
-    csr_scounteren: u32 = 0,
-    csr_cycle: u64 = 0,
-    mem: *MemType,
+    machine: *MachineType,
     out: *Output,
-    timerh: u32 = 0,
-    timerl: u32 = 0,
 
     const regNames = [2][32][]const u8{
         .{ "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31" },
         .{ "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6" },
     };
 
-    pub fn init(mem: *MemType, out: *Output) Self {
-        var cpu = Self{ .mem = mem, .out = out };
+    pub fn init(machine: *MachineType, out: *Output) Self {
+        var cpu = Self{ .machine = machine, .out = out };
         cpu.reset();
         return cpu;
     }
@@ -48,14 +33,7 @@ pub fn RV32Type(comptime MemType: type) type {
         self.regNamesABI = 0;
         self.reservation_valid = false;
         self.reservation_addr = 0;
-        self.csr_mstatus = 0;
-        self.csr_mtvec = 0;
-        self.csr_mcounteren = 0;
-        self.csr_mscratch = 0;
-        self.csr_mepc = 0;
-        self.csr_mcause = 0;
-        self.csr_scounteren = 0;
-        self.csr_cycle = 0;
+        self.machine.resetSystemState();
     }
 
     pub fn dump(self: *Self) !void {
@@ -117,17 +95,14 @@ pub fn RV32Type(comptime MemType: type) type {
     }
 
     pub fn exec(self: *Self) !bool {
-
-        const t:i64 = std.time.microTimestamp();
-        self.timerl = intCastCompat(u32, intCastCompat(u64, t) & 0xFFFFFFFF);
-        self.timerh = intCastCompat(u32, intCastCompat(u64, t) >> 32);
+        self.machine.updateTimersFromHost();
 
         if (self.pc % 4 != 0) {
             try self.out.print("ERROR: The program counter (0x{X:0>8}) is not a multiple of 4\n", .{self.pc});
             return true;
         }
 
-        const insn_i32 = try self.mem.get32(self.pc);
+        const insn_i32 = try self.machine.get32(self.pc);
         const insn: u32 = @bitCast(insn_i32);
 
         if (insn == 0x00100073) {
@@ -140,7 +115,7 @@ pub fn RV32Type(comptime MemType: type) type {
         }
 
         const halt = try self.execInsn(insn);
-        if (!halt) self.csr_cycle +%= 1;
+        if (!halt) self.machine.csr_cycle +%= 1;
         return halt;
     }
 
@@ -525,7 +500,7 @@ pub fn RV32Type(comptime MemType: type) type {
 
     fn execLb(self: *Self, insn: u32) !void {
         const load = self.getILoadCtx(insn);
-        const m8 = try self.mem.get8(load.addr);
+        const m8 = try self.machine.get8(load.addr);
         try self.traceInsnComment(
             "{x:0>8} lb     {s}, {d}({s})",
             .{ insn, self.getRegName(load.rd), load.imm, self.getRegName(load.rs1) },
@@ -538,7 +513,7 @@ pub fn RV32Type(comptime MemType: type) type {
 
     fn execLh(self: *Self, insn: u32) !void {
         const load = self.getILoadCtx(insn);
-        const m16 = try self.mem.get16(load.addr);
+        const m16 = try self.machine.get16(load.addr);
         try self.traceInsnComment(
             "{x:0>8} lh     {s}, {d}({s})",
             .{ insn, self.getRegName(load.rd), load.imm, self.getRegName(load.rs1) },
@@ -551,7 +526,7 @@ pub fn RV32Type(comptime MemType: type) type {
 
     fn execLw(self: *Self, insn: u32) !void {
         const load = self.getILoadCtx(insn);
-        const m32 = try self.mem.get32(load.addr);
+        const m32 = try self.machine.get32(load.addr);
         try self.traceInsnComment(
             "{x:0>8} lw     {s}, {d}({s})",
             .{ insn, self.getRegName(load.rd), load.imm, self.getRegName(load.rs1) },
@@ -564,7 +539,7 @@ pub fn RV32Type(comptime MemType: type) type {
 
     fn execLbu(self: *Self, insn: u32) !void {
         const load = self.getILoadCtx(insn);
-        const m = @as(i32, @as(u8, @bitCast(try self.mem.get8(load.addr))));
+        const m = @as(i32, @as(u8, @bitCast(try self.machine.get8(load.addr))));
         try self.traceInsnComment(
             "{x:0>8} lbu    {s}, {d}({s})",
             .{ insn, self.getRegName(load.rd), load.imm, self.getRegName(load.rs1) },
@@ -577,7 +552,7 @@ pub fn RV32Type(comptime MemType: type) type {
 
     fn execLhu(self: *Self, insn: u32) !void {
         const load = self.getILoadCtx(insn);
-        const m = @as(i32, @as(u16, @bitCast(try self.mem.get16(load.addr))));
+        const m = @as(i32, @as(u16, @bitCast(try self.machine.get16(load.addr))));
         try self.traceInsnComment(
             "{x:0>8} lhu    {s}, {d}({s})",
             .{ insn, self.getRegName(load.rd), load.imm, self.getRegName(load.rs1) },
@@ -597,7 +572,7 @@ pub fn RV32Type(comptime MemType: type) type {
             "{d}(0x{x:0>8}) = 0x{x:0>8}",
             .{ store.imm, self.regU32(store.rs1), @as(u32, src) },
         );
-        try self.mem.set8(store.addr, src);
+        try self.machine.set8(store.addr, src);
         self.reservation_valid = false;
         self.advancePc();
     }
@@ -611,7 +586,7 @@ pub fn RV32Type(comptime MemType: type) type {
             "{d}(0x{x:0>8}) = 0x{x:0>8}",
             .{ store.imm, self.regU32(store.rs1), @as(u32, src) },
         );
-        try self.mem.set16(store.addr, src);
+        try self.machine.set16(store.addr, src);
         self.reservation_valid = false;
         self.advancePc();
     }
@@ -625,7 +600,7 @@ pub fn RV32Type(comptime MemType: type) type {
             "{d}(0x{x:0>8}) = 0x{x:0>8}",
             .{ store.imm, self.regU32(store.rs1), src },
         );
-        try self.mem.set32(store.addr, src);
+        try self.machine.set32(store.addr, src);
         self.reservation_valid = false;
         self.advancePc();
     }
@@ -673,7 +648,7 @@ pub fn RV32Type(comptime MemType: type) type {
     };
 
     fn execAmoBinaryW(self: *Self, insn: u32, r: RTypeCtx, addr: u32, mnemonic: []const u8, op: AmoOp) !void {
-        const old = try self.mem.get32(addr);
+        const old = try self.machine.get32(addr);
         const src = self.regI32(r.rs2);
 
         const result: i32 = switch (op) {
@@ -703,7 +678,7 @@ pub fn RV32Type(comptime MemType: type) type {
             .{ self.getRegName(r.rd), @as(u32, @bitCast(old)), addr, @as(u32, @bitCast(result)) },
         );
 
-        try self.mem.set32(addr, @bitCast(result));
+        try self.machine.set32(addr, @bitCast(result));
         self.setReg(r.rd, old);
         self.reservation_valid = false;
         self.advancePc();
@@ -714,7 +689,7 @@ pub fn RV32Type(comptime MemType: type) type {
             _ = self.illegal();
             return;
         }
-        const old = try self.mem.get32(addr);
+        const old = try self.machine.get32(addr);
         try self.traceInsnComment(
             "{X:0>8} lr.w   {s}, ({s})",
             .{ insn, self.getRegName(r.rd), self.getRegName(r.rs1) },
@@ -730,7 +705,7 @@ pub fn RV32Type(comptime MemType: type) type {
     fn execScW(self: *Self, insn: u32, r: RTypeCtx, addr: u32) !void {
         const can_store = self.reservation_valid and self.reservation_addr == addr;
         if (can_store) {
-            try self.mem.set32(addr, self.regU32(r.rs2));
+            try self.machine.set32(addr, self.regU32(r.rs2));
             self.setReg(r.rd, 0);
         } else {
             self.setReg(r.rd, 1);
@@ -1133,11 +1108,11 @@ pub fn RV32Type(comptime MemType: type) type {
     fn execCsrrw(self: *Self, insn: u32) !void {
         const r = self.getRTypeCtx(insn);
         const csr = self.getInsnCsr(insn);
-        const old = self.csrRead(csr) orelse {
+        const old = self.machine.csrRead(csr) orelse {
             _ = self.illegal();
             return;
         };
-        if (!self.csrWrite(csr, self.regU32(r.rs1))) {
+        if (!self.machine.csrWrite(csr, self.regU32(r.rs1))) {
             _ = self.illegal();
             return;
         }
@@ -1154,12 +1129,12 @@ pub fn RV32Type(comptime MemType: type) type {
     fn execCsrrs(self: *Self, insn: u32) !void {
         const r = self.getRTypeCtx(insn);
         const csr = self.getInsnCsr(insn);
-        const old = self.csrRead(csr) orelse {
+        const old = self.machine.csrRead(csr) orelse {
             _ = self.illegal();
             return;
         };
         if (r.rs1 != 0) {
-            if (!self.csrWrite(csr, old | self.regU32(r.rs1))) {
+            if (!self.machine.csrWrite(csr, old | self.regU32(r.rs1))) {
                 _ = self.illegal();
                 return;
             }
@@ -1177,12 +1152,12 @@ pub fn RV32Type(comptime MemType: type) type {
     fn execCsrrc(self: *Self, insn: u32) !void {
         const r = self.getRTypeCtx(insn);
         const csr = self.getInsnCsr(insn);
-        const old = self.csrRead(csr) orelse {
+        const old = self.machine.csrRead(csr) orelse {
             _ = self.illegal();
             return;
         };
         if (r.rs1 != 0) {
-            if (!self.csrWrite(csr, old & ~self.regU32(r.rs1))) {
+            if (!self.machine.csrWrite(csr, old & ~self.regU32(r.rs1))) {
                 _ = self.illegal();
                 return;
             }
@@ -1201,11 +1176,11 @@ pub fn RV32Type(comptime MemType: type) type {
         const rd = self.getInsnRd(insn);
         const zimm = self.getInsnRs1(insn);
         const csr = self.getInsnCsr(insn);
-        const old = self.csrRead(csr) orelse {
+        const old = self.machine.csrRead(csr) orelse {
             _ = self.illegal();
             return;
         };
-        if (!self.csrWrite(csr, zimm)) {
+        if (!self.machine.csrWrite(csr, zimm)) {
             _ = self.illegal();
             return;
         }
@@ -1223,12 +1198,12 @@ pub fn RV32Type(comptime MemType: type) type {
         const rd = self.getInsnRd(insn);
         const zimm = self.getInsnRs1(insn);
         const csr = self.getInsnCsr(insn);
-        const old = self.csrRead(csr) orelse {
+        const old = self.machine.csrRead(csr) orelse {
             _ = self.illegal();
             return;
         };
         if (zimm != 0) {
-            if (!self.csrWrite(csr, old | zimm)) {
+            if (!self.machine.csrWrite(csr, old | zimm)) {
                 _ = self.illegal();
                 return;
             }
@@ -1247,12 +1222,12 @@ pub fn RV32Type(comptime MemType: type) type {
         const rd = self.getInsnRd(insn);
         const zimm = self.getInsnRs1(insn);
         const csr = self.getInsnCsr(insn);
-        const old = self.csrRead(csr) orelse {
+        const old = self.machine.csrRead(csr) orelse {
             _ = self.illegal();
             return;
         };
         if (zimm != 0) {
-            if (!self.csrWrite(csr, old & ~zimm)) {
+            if (!self.machine.csrWrite(csr, old & ~zimm)) {
                 _ = self.illegal();
                 return;
             }
@@ -1265,43 +1240,6 @@ pub fn RV32Type(comptime MemType: type) type {
         );
         self.setReg(rd, @bitCast(old));
         self.advancePc();
-    }
-
-    fn csrRead(self: *Self, csr: u12) ?u32 {
-        return switch (csr) {
-            0x300 => self.csr_mstatus,
-            0x301 => self.csr_misa,
-            0x305 => self.csr_mtvec,
-            0x306 => self.csr_mcounteren,
-            0x340 => self.csr_mscratch,
-            0x341 => self.csr_mepc,
-            0x342 => self.csr_mcause,
-            0x106 => self.csr_scounteren,
-            0xC00 => @truncate(self.csr_cycle),
-            0xC80 => @truncate(self.csr_cycle >> 32),
-            0xC01 => @truncate(self.timerl), // time
-            0xC81 => @truncate(self.timerh), // timeh
-            0xF11 => 0, // mvendorid
-            0xF12 => 0, // marchid
-            0xF13 => 0, // mimpid
-            0xF14 => 0, // mhartid
-            else => null,
-        };
-    }
-
-    fn csrWrite(self: *Self, csr: u12, value: u32) bool {
-        switch (csr) {
-            0x300 => self.csr_mstatus = value,
-            0x305 => self.csr_mtvec = value,
-            0x306 => self.csr_mcounteren = value,
-            0x340 => self.csr_mscratch = value,
-            0x341 => self.csr_mepc = value,
-            0x342 => self.csr_mcause = value,
-            0x106 => self.csr_scounteren = value,
-            0xC00, 0xC80, 0xC01, 0xC81, 0x301, 0xF11, 0xF12, 0xF13, 0xF14 => return false,
-            else => return false,
-        }
-        return true;
     }
 
     pub fn getInsnImmI(_: *Self, insn: u32) i32 {

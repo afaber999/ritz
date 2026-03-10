@@ -2,9 +2,30 @@ const std = @import("std");
 const Devices = @import("devices.zig").Devices;
 const Output = @import("output.zig").Output;
 
-pub const devBaseAddress: u32 = 0xf0000000;
+fn intCastCompat(comptime T: type, value: anytype) T {
+    return @as(T, @intCast(value));
+}
 
-pub const Bus = struct {
+pub const devBaseAddress: u32 = 0xf0000000;
+const CSR_MSTATUS: u12 = 0x300;
+const CSR_MISA: u12 = 0x301;
+const CSR_MTVEC: u12 = 0x305;
+const CSR_MCOUNTEREN: u12 = 0x306;
+const CSR_MSCRATCH: u12 = 0x340;
+const CSR_MEPC: u12 = 0x341;
+const CSR_MCAUSE: u12 = 0x342;
+const CSR_SCOUNTEREN: u12 = 0x106;
+const CSR_CYCLE: u12 = 0xC00;
+const CSR_CYCLEH: u12 = 0xC80;
+const CSR_TIME: u12 = 0xC01;
+const CSR_TIMEH: u12 = 0xC81;
+const CSR_MVENDORID: u12 = 0xF11;
+const CSR_MARCHID: u12 = 0xF12;
+const CSR_MIMPID: u12 = 0xF13;
+const CSR_MHARTID: u12 = 0xF14;
+const DEFAULT_MISA: u32 = (@as(u32, 1) << 30) | (@as(u32, 1) << 8) | (@as(u32, 1) << 12);
+
+pub const Machine = struct {
     data: []u8,
     start: u64,
     len: u64,
@@ -12,8 +33,19 @@ pub const Bus = struct {
     dev: *Devices,
     out: *Output,
     allocator: std.mem.Allocator,
+    csr_mstatus: u32 = 0,
+    csr_misa: u32 = DEFAULT_MISA, // RV32 + I + M
+    csr_mtvec: u32 = 0,
+    csr_mcounteren: u32 = 0,
+    csr_mscratch: u32 = 0,
+    csr_mepc: u32 = 0,
+    csr_mcause: u32 = 0,
+    csr_scounteren: u32 = 0,
+    csr_cycle: u64 = 0,
+    timerh: u32 = 0,
+    timerl: u32 = 0,
 
-    pub fn init(allocator: std.mem.Allocator, start: u64, length: u64, dev: *Devices, out: *Output) !Bus {
+    pub fn init(allocator: std.mem.Allocator, start: u64, length: u64, dev: *Devices, out: *Output) !Machine {
         const data = try allocator.alloc(u8, length);
         @memset(data, 0xa5);
         return .{
@@ -27,11 +59,68 @@ pub const Bus = struct {
         };
     }
 
-    pub fn deinit(self: *Bus) void {
+    pub fn deinit(self: *Machine) void {
         self.allocator.free(self.data);
     }
 
-    pub fn get8(self: *Bus, addr: u64) !i8 {
+    pub fn resetSystemState(self: *Machine) void {
+        self.csr_mstatus = 0;
+        self.csr_misa = DEFAULT_MISA;
+        self.csr_mtvec = 0;
+        self.csr_mcounteren = 0;
+        self.csr_mscratch = 0;
+        self.csr_mepc = 0;
+        self.csr_mcause = 0;
+        self.csr_scounteren = 0;
+        self.csr_cycle = 0;
+        self.timerh = 0;
+        self.timerl = 0;
+    }
+
+    pub fn updateTimersFromHost(self: *Machine) void {
+        const t: i64 = std.time.microTimestamp();
+        self.timerl = intCastCompat(u32, intCastCompat(u64, t) & 0xFFFF_FFFF);
+        self.timerh = intCastCompat(u32, intCastCompat(u64, t) >> 32);
+    }
+
+    pub fn csrRead(self: *Machine, csr: u12) ?u32 {
+        return switch (csr) {
+            CSR_MSTATUS => self.csr_mstatus,
+            CSR_MISA => self.csr_misa,
+            CSR_MTVEC => self.csr_mtvec,
+            CSR_MCOUNTEREN => self.csr_mcounteren,
+            CSR_MSCRATCH => self.csr_mscratch,
+            CSR_MEPC => self.csr_mepc,
+            CSR_MCAUSE => self.csr_mcause,
+            CSR_SCOUNTEREN => self.csr_scounteren,
+            CSR_CYCLE => @truncate(self.csr_cycle),
+            CSR_CYCLEH => @truncate(self.csr_cycle >> 32),
+            CSR_TIME => @truncate(self.timerl),
+            CSR_TIMEH => @truncate(self.timerh),
+            CSR_MVENDORID => 0,
+            CSR_MARCHID => 0,
+            CSR_MIMPID => 0,
+            CSR_MHARTID => 0,
+            else => null,
+        };
+    }
+
+    pub fn csrWrite(self: *Machine, csr: u12, value: u32) bool {
+        switch (csr) {
+            CSR_MSTATUS => self.csr_mstatus = value,
+            CSR_MTVEC => self.csr_mtvec = value,
+            CSR_MCOUNTEREN => self.csr_mcounteren = value,
+            CSR_MSCRATCH => self.csr_mscratch = value,
+            CSR_MEPC => self.csr_mepc = value,
+            CSR_MCAUSE => self.csr_mcause = value,
+            CSR_SCOUNTEREN => self.csr_scounteren = value,
+            CSR_CYCLE, CSR_CYCLEH, CSR_TIME, CSR_TIMEH, CSR_MISA, CSR_MVENDORID, CSR_MARCHID, CSR_MIMPID, CSR_MHARTID => return false,
+            else => return false,
+        }
+        return true;
+    }
+
+    pub fn get8(self: *Machine, addr: u64) !i8 {
         if (addr >= devBaseAddress) {
             return self.dev.get8(addr);
         }
@@ -46,7 +135,7 @@ pub const Bus = struct {
         return @bitCast(self.data[addr - self.start]);
     }
 
-    pub fn get16(self: *Bus, addr: u64) !i16 {
+    pub fn get16(self: *Machine, addr: u64) !i16 {
         if (addr >= devBaseAddress) {
             return self.dev.get16(addr);
         }
@@ -56,7 +145,7 @@ pub const Bus = struct {
         return @bitCast(b0 | (b1 << 8));
     }
 
-    pub fn get32(self: *Bus, addr: u64) !i32 {
+    pub fn get32(self: *Machine, addr: u64) !i32 {
         if (addr >= devBaseAddress) {
             return self.dev.get32(addr);
         }
@@ -66,7 +155,7 @@ pub const Bus = struct {
         return @bitCast(l | (h << 16));
     }
 
-    pub fn get64(self: *Bus, addr: u64) !i64 {
+    pub fn get64(self: *Machine, addr: u64) !i64 {
         if (addr >= devBaseAddress) {
             return self.dev.get64(addr);
         }
@@ -76,7 +165,7 @@ pub const Bus = struct {
         return @bitCast(l | (h << 32));
     }
 
-    pub fn set8(self: *Bus, addr: u64, val: u8) !void {
+    pub fn set8(self: *Machine, addr: u64, val: u8) !void {
         if (addr >= devBaseAddress) {
             return self.dev.set8(addr, val);
         }
@@ -91,7 +180,7 @@ pub const Bus = struct {
         self.data[addr - self.start] = val;
     }
 
-    pub fn set16(self: *Bus, addr: u64, val: u16) !void {
+    pub fn set16(self: *Machine, addr: u64, val: u16) !void {
         if (addr >= devBaseAddress) {
             return self.dev.set16(addr, val);
         }
@@ -100,7 +189,7 @@ pub const Bus = struct {
         try self.set8(addr + 1, @as(u8, @truncate((val >> 8) & 0x00ff)));
     }
 
-    pub fn set32(self: *Bus, addr: u64, val: u32) !void {
+    pub fn set32(self: *Machine, addr: u64, val: u32) !void {
         if (addr >= devBaseAddress) {
             return self.dev.set32(addr, val);
         }
@@ -109,16 +198,16 @@ pub const Bus = struct {
         try self.set16(addr + 2, @as(u16, @truncate((val >> 16) & 0x0000ffff)));
     }
 
-    pub fn set64(self: *Bus, addr: u64, val: u64) !void {
+    pub fn set64(self: *Machine, addr: u64, val: u64) !void {
         if (addr >= devBaseAddress) {
-            return self.dev.set64(addr, val);
+            return self.dev.set32(addr, @as(u32, @truncate(val)));
         }
 
         try self.set32(addr, @as(u32, @truncate(val & 0x0000_0000_ffff_ffff)));
         try self.set32(addr + 4, @as(u32, @truncate((val >> 32) & 0x0000_0000_ffff_ffff)));
     }
 
-    pub fn readRaw(self: *Bus, filename: []const u8, addr: u64) !void {
+    pub fn readRaw(self: *Machine, filename: []const u8, addr: u64) !void {
         const cwd = std.fs.cwd();
         var file = cwd.openFile(filename, .{}) catch |err| {
             std.debug.print("Failed to open file '{s}', Reason: {s}\n", .{ filename, @errorName(err) });
@@ -132,7 +221,7 @@ pub const Bus = struct {
         _ = try file.readAll(self.data[offset..]);
     }
 
-    pub fn dump(self: *Bus, addr: u64, length: u64) !void {
+    pub fn dump(self: *Machine, addr: u64, length: u64) !void {
         if (length == 0) return;
 
         var i: usize = 0;
@@ -180,3 +269,5 @@ pub const Bus = struct {
         try self.out.print(" *{s}*\n", .{std.mem.sliceTo(ascii[0..], 0)});
     }
 };
+
+pub const Memory = Machine;

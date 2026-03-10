@@ -1,10 +1,10 @@
 const std = @import("std");
-const Memory = @import("memory.zig").Memory;
-const RV32Type = @import("rv32.zig").RV32Type;
+const Machine = @import("machine.zig").Machine;
+const RV32CoreType = @import("rv32core.zig").RV32CoreType;
 const Devices = @import("devices.zig").Devices;
 const Output = @import("output.zig").Output;
 
-pub const RV32 = RV32Type(Memory);
+pub const RV32 = RV32CoreType(Machine);
 
 
 fn usage() void {
@@ -55,8 +55,8 @@ fn cli_r(cpu: *RV32) !void {
     try cpu.dump();
 }
 
-fn cli_d(mem: *Memory, start: u64, len: u64) !void {
-    try mem.dump(start, len);
+fn cli_d(machine: *Machine, start: u64, len: u64) !void {
+    try machine.dump(start, len);
 }
 
 fn parseCmdAndArgs(buf: []const u8, cmd_out: []u8) struct { cmd: []const u8, args: []const u8 } {
@@ -69,14 +69,14 @@ fn parseCmdAndArgs(buf: []const u8, cmd_out: []u8) struct { cmd: []const u8, arg
     return .{ .cmd = cmd, .args = args };
 }
 
-fn cli(cpu: *RV32, mem: *Memory, out: *Output, allocator: std.mem.Allocator) !void {
+fn cli(cpu: *RV32, machine: *Machine, out: *Output, allocator: std.mem.Allocator) !void {
     var stdin_file = std.fs.File.stdin();
     const in = stdin_file.deprecatedReader();
 
     var running = true;
     var buf: [2048]u8 = [_]u8{0} ** 2048;
     var last: [2048]u8 = [_]u8{0} ** 2048;
-    var d_next: u64 = mem.start;
+    var d_next: u64 = machine.start;
     const echo = !stdin_file.isTty();
 
     _ = allocator;
@@ -156,8 +156,8 @@ fn cli(cpu: *RV32, mem: *Memory, out: *Output, allocator: std.mem.Allocator) !vo
             // }
             @memcpy(last[0..line.len], line);
         } else if (std.mem.eql(u8, cmd, "d")) {
-            const mw = mem.memoryWarnings;
-            mem.memoryWarnings = 0;
+            const mw = machine.memoryWarnings;
+            machine.memoryWarnings = 0;
 
             var addr = d_next;
             var count: u64 = 0x100;
@@ -170,9 +170,9 @@ fn cli(cpu: *RV32, mem: *Memory, out: *Output, allocator: std.mem.Allocator) !vo
             } else if (a != null) {
                 addr = try parseIntAuto(a.?);
             }
-            try cli_d(mem, addr, count);
+            try cli_d(machine, addr, count);
             d_next = addr + count;
-            mem.memoryWarnings = mw;
+            machine.memoryWarnings = mw;
             @memcpy(last[0..1], "d");
         } else if (std.mem.eql(u8, cmd, ">")) {
             var tok = std.mem.tokenizeAny(u8, args, " \t");
@@ -252,11 +252,11 @@ pub fn main() !u8 {
     try dev.addConsole();
     try dev.addMemcard();
 
-    var mem = try Memory.init(allocator, memstart, memlen, &dev, &out);
-    defer mem.deinit();
+    var machine = try Machine.init(allocator, memstart, memlen, &dev, &out);
+    defer machine.deinit();
 
 
-    var cpu = RV32.init(&mem, &out);
+    var cpu = RV32.init(&machine, &out);
 
     const start: u32 = @truncate(memstart);
     cpu.setPc(@bitCast(start));
@@ -268,9 +268,9 @@ pub fn main() !u8 {
 
     if (loadfile) |lf| {
         try out.print("Loading '{s}' to 0x{x}\n", .{ lf, start });
-        try mem.readRaw(lf, start);
+        try machine.readRaw(lf, start);
     }
 
-    try cli(&cpu, &mem, &out, allocator);
+    try cli(&cpu, &machine, &out, allocator);
     return 0;
 }
