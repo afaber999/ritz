@@ -7,22 +7,24 @@ fn intCastCompat(comptime T: type, value: anytype) T {
 }
 
 pub const devBaseAddress: u32 = 0xf0000000;
-const CSR_MSTATUS: u12 = 0x300;
-const CSR_MISA: u12 = 0x301;
-const CSR_MTVEC: u12 = 0x305;
-const CSR_MCOUNTEREN: u12 = 0x306;
-const CSR_MSCRATCH: u12 = 0x340;
-const CSR_MEPC: u12 = 0x341;
-const CSR_MCAUSE: u12 = 0x342;
-const CSR_SCOUNTEREN: u12 = 0x106;
-const CSR_CYCLE: u12 = 0xC00;
-const CSR_CYCLEH: u12 = 0xC80;
-const CSR_TIME: u12 = 0xC01;
-const CSR_TIMEH: u12 = 0xC81;
-const CSR_MVENDORID: u12 = 0xF11;
-const CSR_MARCHID: u12 = 0xF12;
-const CSR_MIMPID: u12 = 0xF13;
-const CSR_MHARTID: u12 = 0xF14;
+pub const CSR_MSTATUS: u12 = 0x300;
+pub const CSR_MISA: u12 = 0x301;
+pub const CSR_MIE: u12 = 0x304;
+pub const CSR_MTVEC: u12 = 0x305;
+pub const CSR_MCOUNTEREN: u12 = 0x306;
+pub const CSR_MIP: u12 = 0x344;
+pub const CSR_MSCRATCH: u12 = 0x340;
+pub const CSR_MEPC: u12 = 0x341;
+pub const CSR_MCAUSE: u12 = 0x342;
+pub const CSR_SCOUNTEREN: u12 = 0x106;
+pub const CSR_CYCLE: u12 = 0xC00;
+pub const CSR_CYCLEH: u12 = 0xC80;
+pub const CSR_TIME: u12 = 0xC01;
+pub const CSR_TIMEH: u12 = 0xC81;
+pub const CSR_MVENDORID: u12 = 0xF11;
+pub const CSR_MARCHID: u12 = 0xF12;
+pub const CSR_MIMPID: u12 = 0xF13;
+pub const CSR_MHARTID: u12 = 0xF14;
 const DEFAULT_MISA: u32 = (@as(u32, 1) << 30) | (@as(u32, 1) << 8) | (@as(u32, 1) << 12);
 
 pub const Machine = struct {
@@ -35,8 +37,10 @@ pub const Machine = struct {
     allocator: std.mem.Allocator,
     csr_mstatus: u32 = 0,
     csr_misa: u32 = DEFAULT_MISA, // RV32 + I + M
+    csr_mie: u32 = 0,
     csr_mtvec: u32 = 0,
     csr_mcounteren: u32 = 0,
+    csr_mip: u32 = 0,
     csr_mscratch: u32 = 0,
     csr_mepc: u32 = 0,
     csr_mcause: u32 = 0,
@@ -44,6 +48,14 @@ pub const Machine = struct {
     csr_cycle: u64 = 0,
     timerh: u32 = 0,
     timerl: u32 = 0,
+    timermatchh: u32 = 0,
+    timermatchl: u32 = 0,
+
+	// Note: only a few bits are used.  (Machine = 3, User = 0)
+	// Bits 0..1 = privilege.
+	// Bit 2 = WFI (Wait for interrupt)
+    extraflags: u32 = 0,
+
 
     pub fn init(allocator: std.mem.Allocator, start: u64, length: u64, dev: *Devices, out: *Output) !Machine {
         const data = try allocator.alloc(u8, length);
@@ -66,8 +78,10 @@ pub const Machine = struct {
     pub fn resetSystemState(self: *Machine) void {
         self.csr_mstatus = 0;
         self.csr_misa = DEFAULT_MISA;
+        self.csr_mie = 0;
         self.csr_mtvec = 0;
         self.csr_mcounteren = 0;
+        self.csr_mip = 0;
         self.csr_mscratch = 0;
         self.csr_mepc = 0;
         self.csr_mcause = 0;
@@ -77,18 +91,31 @@ pub const Machine = struct {
         self.timerl = 0;
     }
 
-    pub fn updateTimersFromHost(self: *Machine) void {
+    pub fn next_cycle(self: *Machine) void {
+        self.csr_cycle +%= 1;
         const t: i64 = std.time.microTimestamp();
         self.timerl = intCastCompat(u32, intCastCompat(u64, t) & 0xFFFF_FFFF);
         self.timerh = intCastCompat(u32, intCastCompat(u64, t) >> 32);
+
+        // Handle timer interrupt (MTIP bit in mip).
+        if ((self.timermatchh != 0 or self.timermatchl != 0) and
+            ((self.timerh > self.timermatchh) or (self.timerh == self.timermatchh and self.timerl > self.timermatchl)))
+        {
+            self.extraflags &= ~@as(u32, 4); // Clear WFI
+            self.csr_mip |= (@as(u32, 1) << 7);
+        } else {
+            self.csr_mip &= ~(@as(u32, 1) << 7);
+        }
     }
 
     pub fn csrRead(self: *Machine, csr: u12) ?u32 {
         return switch (csr) {
             CSR_MSTATUS => self.csr_mstatus,
             CSR_MISA => self.csr_misa,
+            CSR_MIE => self.csr_mie,
             CSR_MTVEC => self.csr_mtvec,
             CSR_MCOUNTEREN => self.csr_mcounteren,
+            CSR_MIP => self.csr_mip,
             CSR_MSCRATCH => self.csr_mscratch,
             CSR_MEPC => self.csr_mepc,
             CSR_MCAUSE => self.csr_mcause,
@@ -108,13 +135,17 @@ pub const Machine = struct {
     pub fn csrWrite(self: *Machine, csr: u12, value: u32) bool {
         switch (csr) {
             CSR_MSTATUS => self.csr_mstatus = value,
+            CSR_MIE => self.csr_mie = value,
             CSR_MTVEC => self.csr_mtvec = value,
             CSR_MCOUNTEREN => self.csr_mcounteren = value,
+            CSR_MIP => self.csr_mip = value,
             CSR_MSCRATCH => self.csr_mscratch = value,
             CSR_MEPC => self.csr_mepc = value,
             CSR_MCAUSE => self.csr_mcause = value,
             CSR_SCOUNTEREN => self.csr_scounteren = value,
-            CSR_CYCLE, CSR_CYCLEH, CSR_TIME, CSR_TIMEH, CSR_MISA, CSR_MVENDORID, CSR_MARCHID, CSR_MIMPID, CSR_MHARTID => return false,
+            CSR_TIME => self.timermatchl = value,
+            CSR_TIMEH => self.timermatchh = value,
+            CSR_CYCLE, CSR_CYCLEH, CSR_MISA, CSR_MVENDORID, CSR_MARCHID, CSR_MIMPID, CSR_MHARTID => return false,
             else => return false,
         }
         return true;
@@ -166,6 +197,12 @@ pub const Machine = struct {
     }
 
     pub fn set8(self: *Machine, addr: u64, val: u8) !void {
+
+        if (addr == 0x10000000) {
+            std.debug.print("{c}", .{val});
+            return;
+        }
+
         if (addr >= devBaseAddress) {
             return self.dev.set8(addr, val);
         }
@@ -181,6 +218,11 @@ pub const Machine = struct {
     }
 
     pub fn set16(self: *Machine, addr: u64, val: u16) !void {
+        if (addr == 0x10000000) {
+            std.debug.print("{c}", .{@as(u8, @truncate(val))});
+            return;
+        }
+
         if (addr >= devBaseAddress) {
             return self.dev.set16(addr, val);
         }
@@ -190,6 +232,12 @@ pub const Machine = struct {
     }
 
     pub fn set32(self: *Machine, addr: u64, val: u32) !void {
+
+        if (addr == 0x10000000) {
+            std.debug.print("{c}", .{@as(u8, @truncate(val))});
+            return;
+        }
+
         if (addr >= devBaseAddress) {
             return self.dev.set32(addr, val);
         }

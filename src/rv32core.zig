@@ -1,6 +1,13 @@
 ﻿const std = @import("std");
 const Output = @import("output.zig").Output;
 
+const CSR_MSTATUS: u12 = 0x300;
+const CSR_MIE: u12 = 0x304;
+const CSR_MTVEC: u12 = 0x305;
+const CSR_MIP: u12 = 0x344;
+const CSR_MEPC: u12 = 0x341;
+const CSR_MCAUSE: u12 = 0x342;
+
 pub fn RV32CoreType(comptime MachineType: type) type {
     return struct {
     const Self = @This();
@@ -95,7 +102,16 @@ pub fn RV32CoreType(comptime MachineType: type) type {
     }
 
     pub fn exec(self: *Self) !bool {
-        self.machine.updateTimersFromHost();
+
+        var halt: bool = false;
+
+        // update machine state for the next instruction, and get any pending exceptions/interrupts
+        self.machine.next_cycle();
+
+        // If WFI, don't run processor.
+        if ((self.machine.extraflags & @as(u32, 4)) != 0) {
+		    return false;
+        }
 
         if (self.pc % 4 != 0) {
             try self.out.print("ERROR: The program counter (0x{X:0>8}) is not a multiple of 4\n", .{self.pc});
@@ -113,10 +129,51 @@ pub fn RV32CoreType(comptime MachineType: type) type {
             try self.out.print("{X:0>8}: 00000073 ecall (unimplemented)\n", .{self.pc});
             return true;
         }
+        if (self.isMretInsn(insn)) {
+            const cur_mstatus = self.machine.csrRead(CSR_MSTATUS) orelse 0;
+            const mepc = self.machine.csrRead(CSR_MEPC) orelse self.pc;
 
-        const halt = try self.execInsn(insn);
-        if (!halt) self.machine.csr_cycle +%= 1;
+            // mret: MIE <- MPIE, MPIE <- 1
+            var next_mstatus = cur_mstatus;
+            const mpie_to_mie = (cur_mstatus >> 4) & @as(u32, 0x8);
+            next_mstatus = (next_mstatus & ~@as(u32, 0x8)) | mpie_to_mie;
+            next_mstatus |= @as(u32, 0x80);
+            _ = self.machine.csrWrite(CSR_MSTATUS, next_mstatus);
+
+            self.pc = mepc;
+            return false;
+        }
+
+        const mip = self.machine.csrRead(CSR_MIP) orelse 0;
+        const mie = self.machine.csrRead(CSR_MIE) orelse 0;
+        const mstatus = self.machine.csrRead(CSR_MSTATUS) orelse 0;
+        if (((mip & (@as(u32, 1) << 7)) != 0) and
+            ((mie & (@as(u32, 1) << 7)) != 0) and
+            ((mstatus & @as(u32, 0x8)) != 0))
+        {
+            const mtvec = self.machine.csrRead(CSR_MTVEC) orelse 0;
+            const trap_pc = mtvec & ~@as(u32, 0x3);
+            const mcause_timer_interrupt = (@as(u32, 1) << 31) | 7;
+
+            _ = self.machine.csrWrite(CSR_MEPC, self.pc);
+            _ = self.machine.csrWrite(CSR_MCAUSE, mcause_timer_interrupt);
+
+            // On trap entry: MPIE <- MIE, MIE <- 0
+            const mpie_from_mie = (mstatus & @as(u32, 0x8)) << 4;
+            const next_mstatus = (mstatus & ~@as(u32, 0x88)) | mpie_from_mie;
+            _ = self.machine.csrWrite(CSR_MSTATUS, next_mstatus);
+
+            self.pc = trap_pc;
+            return false;
+        }
+
+        halt = try self.execInsn(insn);
+        if ((self.machine.extraflags & @as(u32, 1)) != 0) {
+            return true;
+        }
+
         return halt;
+
     }
 
     fn execInsn(self: *Self, insn: u32) !bool {
@@ -1296,6 +1353,14 @@ pub fn RV32CoreType(comptime MachineType: type) type {
 
     pub fn getInsnCsr(_: *Self, insn: u32) u12 {
         return @truncate((insn >> 20) & 0x0fff);
+    }
+
+    fn isMretInsn(self: *Self, insn: u32) bool {
+        return self.getInsnOpcode(insn) == 0b1110011 and
+            self.getInsnFunct3(insn) == 0 and
+            self.getInsnRd(insn) == 0 and
+            self.getInsnRs1(insn) == 0 and
+            self.getInsnCsr(insn) == 0x302;
     }
     };
 }

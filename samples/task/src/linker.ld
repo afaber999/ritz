@@ -1,10 +1,11 @@
-__stack_top = 0x2000;
+__memstart = 0x80000000;
+__stack_top =__memstart + 0x2000;
 
 ENTRY(_start)
 
 SECTIONS
 {
-	. = 0x00000000;
+	. = __memstart;
 	.text : ALIGN(16) {
 		*(.text)
 	}

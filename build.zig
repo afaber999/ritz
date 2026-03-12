@@ -62,6 +62,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const sample_name = b.option([]const u8, "sample", "Sample firmware name for run/samples-run (for example: stand01 or stand01.bin)");
+    const qemu_path = b.option([]const u8, "qemu", "Full path to qemu-system-riscv32 executable for samples-qemu-run");
 
     const exe = b.addExecutable(.{
         .name = "ritz",
@@ -129,6 +130,25 @@ pub fn build(b: *std.Build) void {
 
     const samples_run_step = b.step("samples-run", "Build and run sample firmware via compiled ritz");
     samples_run_step.dependOn(&samples_run_cmd.step);
+
+    const samples_qemu_run_cmd = b.addSystemCommand(&.{
+        "zig",
+        "build",
+        "qemu-run",
+        "--build-file",
+        "build.zig",
+    });
+    samples_qemu_run_cmd.setCwd(b.path("samples"));
+    if (sample_name) |name_raw| {
+        const name = if (std.mem.endsWith(u8, name_raw, ".bin")) name_raw[0 .. name_raw.len - 4] else name_raw;
+        samples_qemu_run_cmd.addArg(b.fmt("-Dfirmware={s}", .{name}));
+    }
+    if (qemu_path) |path| {
+        samples_qemu_run_cmd.addArg(b.fmt("-Dqemu={s}", .{path}));
+    }
+
+    const samples_qemu_run_step = b.step("samples-qemu-run", "Build and run sample firmware via QEMU");
+    samples_qemu_run_step.dependOn(&samples_qemu_run_cmd.step);
 
     const tests_build_cmd = b.addSystemCommand(&.{
         "zig",

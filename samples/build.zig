@@ -134,8 +134,10 @@ fn addFirmware(
     target: std.Build.ResolvedTarget,
     gnu_objcopy: ?[]const u8,
     gnu_objdump: ?[]const u8,
+    qemu_system_riscv32: ?[]const u8,
     run_selection: ?[]const u8,
     run_all_step: *std.Build.Step,
+    qemu_run_all_step: *std.Build.Step,
     lst_all_step: *std.Build.Step,
 ) bool {
     const root_source_path = b.fmt("{s}/src/main.zig", .{firmware_name});
@@ -234,6 +236,31 @@ fn addFirmware(
         run_all_step.dependOn(&ritz_exe.step);
     }
 
+    if (qemu_system_riscv32) |qemu_path| {
+        const qemu_cmd = b.addSystemCommand(&.{
+            qemu_path,
+            "-M",
+            "virt",
+            "-cpu",
+            "rv32",
+            "-nographic",
+            "-bios",
+            "none",
+            "-kernel",
+        });
+        qemu_cmd.addFileArg(firmware.getEmittedBin());
+        qemu_cmd.step.dependOn(&firmware.step);
+
+        const qemu_run_step_name = b.fmt("qemu-run-{s}", .{firmware_name});
+        const qemu_run_step_desc = b.fmt("Run {s} ELF in QEMU", .{firmware_name});
+        const qemu_run_step = b.step(qemu_run_step_name, qemu_run_step_desc);
+        qemu_run_step.dependOn(&qemu_cmd.step);
+
+        if (selected_for_run) {
+            qemu_run_all_step.dependOn(&qemu_cmd.step);
+        }
+    }
+
     const lst_step_name = b.fmt("lst-{s}", .{firmware_name});
     const lst_step_desc = b.fmt("Generate {s}.lst from firmware ELF using GNU objdump", .{firmware_name});
     const lst_step = b.step(lst_step_name, lst_step_desc);
@@ -281,6 +308,12 @@ pub fn build(b: *std.Build) void {
         "riscv32-esp-elf-objcopy",
         "objcopy",
     };
+    const qemu_candidates = [_][]const u8{
+        "qemu-system-riscv32",
+        "qemu-system-riscv32.exe",
+        "qemu-system-riscv64",
+        "qemu-system-riscv64.exe",
+    };
     const risctools_search_paths = [_][]const u8{
         "C:/msys64/mingw64/bin",
         "C:/msys64/ucrt64/bin",
@@ -289,9 +322,17 @@ pub fn build(b: *std.Build) void {
         "/ucrt64/bin",
         "/usr/bin",
     };
+    const qemu_search_paths = [_][]const u8{
+        "C:/Program Files/qemu",
+    };
 
     const gnu_objdump = findFirstProgram(b, &objdump_candidates, &risctools_search_paths);
     const gnu_objcopy = findFirstProgram(b, &objcopy_candidates, &risctools_search_paths);
+    const qemu_path_override = b.option([]const u8, "qemu", "Full path to qemu-system-riscv32 executable");
+    const qemu_system = if (qemu_path_override) |path|
+        path
+    else
+        findFirstProgram(b, &qemu_candidates, &qemu_search_paths) orelse findFirstProgram(b, &qemu_candidates, &.{});
     const run_selection = b.option([]const u8, "firmware", "Firmware name to run with `zig build run` (e.g. stand01)");
 
     if (gnu_objcopy == null) {
@@ -300,8 +341,12 @@ pub fn build(b: *std.Build) void {
     if (gnu_objdump == null) {
         std.log.warn("GNU objdump not found; .lst generation steps will be skipped", .{});
     }
+    if (qemu_system == null) {
+        std.log.warn("QEMU not found; qemu-run steps will be unavailable", .{});
+    }
 
     const run_all_step = b.step("run", "Run ritz_exe for all firmware bins");
+    const qemu_run_all_step = b.step("qemu-run", "Run firmware ELFs in QEMU (all or -Dfirmware=<name>)");
     const lst_all_step = b.step("lst", "Generate .lst files for all firmware ELFs");
     const clean_step = b.step("clean", "Delete all .zig-cache and zig-out directories");
 
@@ -339,8 +384,10 @@ pub fn build(b: *std.Build) void {
             target,
             gnu_objcopy,
             gnu_objdump,
+            qemu_system,
             run_selection,
             run_all_step,
+            qemu_run_all_step,
             lst_all_step,
         );
         selected_firmware_found = selected_firmware_found or selected_match;

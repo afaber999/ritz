@@ -118,6 +118,24 @@ Run a specific sample (example: `stand01`):
 zig build samples-run -Dsample=stand01
 ```
 
+Run samples in QEMU:
+
+```bash
+zig build samples-qemu-run
+```
+
+Run one sample in QEMU:
+
+```bash
+zig build samples-qemu-run -Dsample=stand01
+```
+
+If QEMU is not on PATH, provide it explicitly:
+
+```bash
+zig build samples-qemu-run -Dsample=stand01 -Dqemu="C:/Program Files/qemu/qemu-system-riscv32.exe"
+```
+
 ## Tests (Top Level)
 
 From the repository root, use the top-level test steps:

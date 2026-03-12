@@ -1,4 +1,5 @@
-const UART_BUF_REG_ADDR:usize = 0xf0000000;
+                                 
+const UART_BUF_REG_ADDR:usize = 0x10000000;
 const uart_buf_reg = @volatileCast(@as(*u32, @ptrFromInt(UART_BUF_REG_ADDR)));
 
 export fn main() u32 {
