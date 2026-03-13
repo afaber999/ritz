@@ -2,6 +2,9 @@ const std = @import("std");
 const Devices = @import("devices.zig").Devices;
 const Output = @import("output.zig").Output;
 const Clint = @import("devices/clint.zig");
+const Ns16550 = @import("devices/ns16550.zig");
+
+
 
 fn intCastCompat(comptime T: type, value: anytype) T {
     return @as(T, @intCast(value));
@@ -161,8 +164,8 @@ pub const Machine = struct {
             return @bitCast(b);
         }
 
-        if (addr == 0x10000005) {
-            return 0x20;
+        if (Ns16550.read8(addr)) |b| {
+            return @bitCast(b);
         }
 
         if (addr >= devBaseAddress) {
@@ -216,8 +219,7 @@ pub const Machine = struct {
             return;
         }
 
-        if (addr == 0x10000000) {
-            std.debug.print("{c}", .{val});
+        if (Ns16550.write8(addr, val)) {
             return;
         }
 
@@ -236,8 +238,7 @@ pub const Machine = struct {
     }
 
     pub fn set16(self: *Machine, addr: u64, val: u16) !void {
-        if (addr == 0x10000000) {
-            std.debug.print("{c}", .{@as(u8, @truncate(val))});
+        if (Ns16550.write8(addr, @truncate(val))) {
             return;
         }
 
@@ -256,8 +257,7 @@ pub const Machine = struct {
             return;
         }
 
-        if (addr == 0x10000000) {
-            std.debug.print("{c}", .{@as(u8, @truncate(val))});
+        if (Ns16550.write8(addr, @truncate(val))) {
             return;
         }
 
