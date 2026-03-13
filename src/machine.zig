@@ -1,10 +1,8 @@
 const std = @import("std");
 const Devices = @import("devices.zig").Devices;
 const Output = @import("output.zig").Output;
-const Clint = @import("devices/clint.zig");
-const Ns16550 = @import("devices/ns16550.zig");
-
-
+const ClintDev = @import("devices/clint.zig").Clint;
+const Ns16550Dev = @import("devices/ns16550.zig").Ns16550;
 
 fn intCastCompat(comptime T: type, value: anytype) T {
     return @as(T, @intCast(value));
@@ -54,6 +52,8 @@ pub const Machine = struct {
     timerl: u32 = 0,
     timermatchh: u32 = 0,
     timermatchl: u32 = 0,
+    clint: ClintDev,
+    ns16550: Ns16550Dev,
 
 	// Note: only a few bits are used.  (Machine = 3, User = 0)
     // Bits 0..1 = privilege.
@@ -62,7 +62,15 @@ pub const Machine = struct {
     extraflags: u32 = 3,
 
 
-    pub fn init(allocator: std.mem.Allocator, start: u64, length: u64, dev: *Devices, out: *Output) !Machine {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        start: u64,
+        length: u64,
+        dev: *Devices,
+        out: *Output,
+        clint_msip_base: u64,
+        ns16550_base: u64,
+    ) !Machine {
         const data = try allocator.alloc(u8, length);
         @memset(data, 0xa5);
         return .{
@@ -73,6 +81,8 @@ pub const Machine = struct {
             .dev = dev,
             .out = out,
             .allocator = allocator,
+            .clint = ClintDev.init(clint_msip_base),
+            .ns16550 = Ns16550Dev.init(ns16550_base),
         };
     }
 
@@ -159,12 +169,12 @@ pub const Machine = struct {
 
     pub fn get8(self: *Machine, addr: u64) !i8 {
 
-        if (Clint.isMsipAddr(addr)) {
-            const b = Clint.readMsipByte(self.csr_mip, addr);
+        if (self.clint.isMsipAddr(addr)) {
+            const b = self.clint.readMsipByte(self.csr_mip, addr);
             return @bitCast(b);
         }
 
-        if (Ns16550.read8(addr)) |b| {
+        if (self.ns16550.read8(addr)) |b| {
             return @bitCast(b);
         }
 
@@ -214,12 +224,12 @@ pub const Machine = struct {
 
     pub fn set8(self: *Machine, addr: u64, val: u8) !void {
 
-        if (Clint.isMsipAddr(addr)) {
-            Clint.writeMsipByte(self, addr, val);
+        if (self.clint.isMsipAddr(addr)) {
+            self.clint.writeMsipByte(self, addr, val);
             return;
         }
 
-        if (Ns16550.write8(addr, val)) {
+        if (self.ns16550.write8(addr, val)) {
             return;
         }
 
@@ -238,7 +248,7 @@ pub const Machine = struct {
     }
 
     pub fn set16(self: *Machine, addr: u64, val: u16) !void {
-        if (Ns16550.write8(addr, @truncate(val))) {
+        if (self.ns16550.write8(addr, @truncate(val))) {
             return;
         }
 
@@ -252,12 +262,12 @@ pub const Machine = struct {
 
     pub fn set32(self: *Machine, addr: u64, val: u32) !void {
 
-        if (addr == Clint.msip_base) {
-            Clint.writeMsipWord(self, val);
+        if (addr == self.clint.msip_base) {
+            self.clint.writeMsipWord(self, val);
             return;
         }
 
-        if (Ns16550.write8(addr, @truncate(val))) {
+        if (self.ns16550.write8(addr, @truncate(val))) {
             return;
         }
 

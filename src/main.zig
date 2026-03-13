@@ -298,7 +298,15 @@ pub fn main() !u8 {
     try dev.addConsole();
     try dev.addMemcard();
 
-    var machine = try Machine.init(allocator, memstart, memlen, &dev, &out);
+    var machine = try Machine.init(
+        allocator,
+        memstart,
+        memlen,
+        &dev,
+        &out,
+        0x02000000,
+        0x10000000,
+    );
     defer machine.deinit();
 
 
