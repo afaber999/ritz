@@ -174,6 +174,19 @@ fn cli(soc: *RV32SOC, machine: *Machine, out: *Output, allocator: std.mem.Alloca
             d_next = addr + count;
             machine.memoryWarnings = mw;
             @memcpy(last[0..1], "d");
+        } else if (std.mem.eql(u8, cmd, "b")) {
+            machine.memoryWarnings = 0;
+
+            var addr = d_next;
+            var tok = std.mem.tokenizeAny(u8, args, " \t");
+            const a = tok.next();
+            if (a != null) {
+                addr = try parseIntAuto(a.?);
+            } else if (a != null) {
+                addr = 0x0000;
+            }
+            soc.breakpoint = @bitCast(@as(u32, @truncate(addr)));
+            @memcpy(last[0..1], "b");
         } else if (std.mem.eql(u8, cmd, ">")) {
             var tok = std.mem.tokenizeAny(u8, args, " \t");
             const a = tok.next();

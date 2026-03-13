@@ -74,13 +74,19 @@ trap_exit:
 
 /* a0 = pointer to NUL-terminated string */
 puts:
+    addi    sp, sp, -16
+    sw      ra, 12(sp)
+
+puts_loop:
     lbu     t0, 0(a0)
     beqz    t0, puts_ret
     mv      a1, t0
     jal     ra, putc
     addi    a0, a0, 1
-    j       puts
+    j       puts_loop
 puts_ret:
+    lw      ra, 12(sp)
+    addi    sp, sp, 16
     ret
 
 /* a1 = character */

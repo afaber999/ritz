@@ -97,6 +97,7 @@ pub fn build(b: *std.Build) void {
     const samples_build_cmd = b.addSystemCommand(&.{
         "zig",
         "build",
+        "-j1",
         "--build-file",
         "build.zig",
         "--summary",
@@ -117,6 +118,7 @@ pub fn build(b: *std.Build) void {
     const samples_run_cmd = b.addSystemCommand(&.{
         "zig",
         "build",
+        "-j1",
         "run",
         "--build-file",
         "build.zig",
@@ -134,6 +136,7 @@ pub fn build(b: *std.Build) void {
     const samples_qemu_run_cmd = b.addSystemCommand(&.{
         "zig",
         "build",
+        "-j1",
         "qemu-run",
         "--build-file",
         "build.zig",

@@ -14,6 +14,7 @@ pub fn RV32CoreType(comptime MachineType: type) type {
 
     reg: [32]u32 = [_]u32{0} ** 32,
     pc: u32 = 0,
+    breakpoint: u32 = 0,
     trace: i32 = 1,
     regNamesABI: i32 = 0,
     reservation_valid: bool = false,
@@ -121,14 +122,6 @@ pub fn RV32CoreType(comptime MachineType: type) type {
         const insn_i32 = try self.machine.get32(self.pc);
         const insn: u32 = @bitCast(insn_i32);
 
-        if (insn == 0x00100073) {
-            try self.out.print("{X:0>8}: 00100073 ebreak\n", .{self.pc});
-            return true;
-        }
-        if (insn == 0x00000073) {
-            try self.out.print("{X:0>8}: 00000073 ecall (unimplemented)\n", .{self.pc});
-            return true;
-        }
         if (self.isMretInsn(insn)) {
             const cur_mstatus = self.machine.csrRead(CSR_MSTATUS) orelse 0;
             const mepc = self.machine.csrRead(CSR_MEPC) orelse self.pc;
@@ -151,24 +144,18 @@ pub fn RV32CoreType(comptime MachineType: type) type {
             ((mie & (@as(u32, 1) << 7)) != 0) and
             ((mstatus & @as(u32, 0x8)) != 0))
         {
-            const mtvec = self.machine.csrRead(CSR_MTVEC) orelse 0;
-            const trap_pc = mtvec & ~@as(u32, 0x3);
             const mcause_timer_interrupt = (@as(u32, 1) << 31) | 7;
-
-            _ = self.machine.csrWrite(CSR_MEPC, self.pc);
-            _ = self.machine.csrWrite(CSR_MCAUSE, mcause_timer_interrupt);
-
-            // On trap entry: MPIE <- MIE, MIE <- 0
-            const mpie_from_mie = (mstatus & @as(u32, 0x8)) << 4;
-            const next_mstatus = (mstatus & ~@as(u32, 0x88)) | mpie_from_mie;
-            _ = self.machine.csrWrite(CSR_MSTATUS, next_mstatus);
-
-            self.pc = trap_pc;
+            self.enterTrap(self.pc, mcause_timer_interrupt);
             return false;
         }
 
         halt = try self.execInsn(insn);
-        if ((self.machine.extraflags & @as(u32, 1)) != 0) {
+        if ((self.machine.extraflags & @as(u32, 8)) != 0) {
+            return true;
+        }
+
+        if (self.pc == self.breakpoint) {
+            try self.out.print("BREAKPOINT: (0x{X:0>8})\n", .{self.pc});
             return true;
         }
 
@@ -180,8 +167,9 @@ pub fn RV32CoreType(comptime MachineType: type) type {
         const opcode = self.getInsnOpcode(insn);
         const funct3 = self.getInsnFunct3(insn);
         const funct7 = self.getInsnFunct7(insn);
+        const is_stop_sys = insn == 0x00100073;
 
-        if (self.trace != 0) {
+        if (self.trace != 0 and !is_stop_sys) {
             try self.out.print("{X:0>8}: ", .{self.pc});
         }
 
@@ -276,6 +264,21 @@ pub fn RV32CoreType(comptime MachineType: type) type {
                 else => return self.illegal(),
             },
             0b1110011 => switch (funct3) {
+                0b000 => switch (insn) {
+                    0x00100073 => {
+                        try self.out.print("{X:0>8}: 00100073 ebreak\n", .{self.pc});
+                        return true;
+                    },
+                    0x00000073 => {
+                        try self.execEcall(insn);
+                        return false;
+                    },
+                    0x10500073 => {
+                        try self.execWfi(insn);
+                        return false;
+                    },
+                    else => return self.illegal(),
+                },
                 0b001 => try self.execCsrrw(insn),
                 0b010 => try self.execCsrrs(insn),
                 0b011 => try self.execCsrrc(insn),
@@ -289,6 +292,35 @@ pub fn RV32CoreType(comptime MachineType: type) type {
 
         if (self.trace != 0) try self.out.print("\n", .{});
         return false;
+    }
+
+    fn enterTrap(self: *Self, mepc: u32, mcause: u32) void {
+        const mtvec = self.machine.csrRead(CSR_MTVEC) orelse 0;
+        const mstatus = self.machine.csrRead(CSR_MSTATUS) orelse 0;
+        const trap_pc = mtvec & ~@as(u32, 0x3);
+
+        _ = self.machine.csrWrite(CSR_MEPC, mepc);
+        _ = self.machine.csrWrite(CSR_MCAUSE, mcause);
+
+        // On trap entry: MPIE <- MIE, MIE <- 0
+        const mpie_from_mie = (mstatus & @as(u32, 0x8)) << 4;
+        const next_mstatus = (mstatus & ~@as(u32, 0x88)) | mpie_from_mie;
+        _ = self.machine.csrWrite(CSR_MSTATUS, next_mstatus);
+
+        self.pc = trap_pc;
+    }
+
+    fn execEcall(self: *Self, insn: u32) !void {
+        // Only M- and U-mode are modeled by this core state.
+        const cause: u32 = if ((self.machine.extraflags & @as(u32, 0x3)) == 0) 8 else 11;
+        try self.traceInsn("{X:0>8} ecall", .{insn});
+        self.enterTrap(self.pc, cause);
+    }
+
+    fn execWfi(self: *Self, insn: u32) !void {
+        try self.traceInsn("{X:0>8} wfi", .{insn});
+        self.machine.extraflags |= @as(u32, 4);
+        self.advancePc();
     }
 
     fn illegal(self: *Self) bool {

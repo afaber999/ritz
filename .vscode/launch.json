@@ -12,9 +12,10 @@
       },
       "program": "${workspaceFolder}/zig-out/bin/ritz.exe",
       "args": [ 
-        "-s","0x80000000",
-        "-l","0x2000",
-        "-f", "${workspaceFolder}/samples/zig-out/bin/hello.bin"
+        "-s","0x00000000",
+        "-l","0x20000",
+        "-f", "${workspaceFolder}/tests/firmware/firmware.bin"
+        // "-f", "${workspaceFolder}/samples/zig-out/bin/hello.bin"
        ],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}",

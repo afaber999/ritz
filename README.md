@@ -185,3 +185,5 @@ At the `ritz>` prompt:
 
 
 .\zig-out\bin\ritz.exe -l 0x20000 -f .\tests\firmware\firmware.bin
+
+zig build samples-qemu-run -Dsample=trap

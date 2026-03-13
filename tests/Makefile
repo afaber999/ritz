@@ -3,6 +3,7 @@ TESTS_PATH=./riscv_tests
 RISCV_GCC=$(RISCV_PATH)/riscv64-unknown-elf-gcc -mabi=ilp32
 RISCV_OBJCOPY=$(RISCV_PATH)/riscv64-unknown-elf-objcopy
 RISCV_OBJDUMP=$(RISCV_PATH)/riscv64-unknown-elf-objdump
+RISCV_NM=$(RISCV_PATH)/riscv64-unknown-elf-nm
 
 all: 
 	$(RISCV_GCC) -c -march=rv32im  firmware/start.S -o firmware/start.o
@@ -123,6 +124,12 @@ all:
 		-DTEST_FUNC_TXT='"amominu_w"' -DTEST_FUNC_RET=amominu_w_ret $(TESTS_PATH)/amominu_w.S
 	$(RISCV_GCC) -c -march=rv32ima_zicsr -o $(TESTS_PATH)/lrsc.o -DTEST_FUNC_NAME=lrsc \
 		-DTEST_FUNC_TXT='"lrsc_w"' -DTEST_FUNC_RET=lrsc_ret $(TESTS_PATH)/lrsc.S
+	$(RISCV_GCC) -c -march=rv32ima_zicsr -o $(TESTS_PATH)/ma_addr.o -DTEST_FUNC_NAME=ma_addr \
+		-DTEST_FUNC_TXT='"ma_addr"' -DTEST_FUNC_RET=ma_addr_ret $(TESTS_PATH)/ma_addr.S
+	$(RISCV_GCC) -c -march=rv32ima_zicsr -o $(TESTS_PATH)/breakpoint.o -DTEST_FUNC_NAME=breakpoint \
+		-DTEST_FUNC_TXT='"breakpoint"' -DTEST_FUNC_RET=breakpoint_ret $(TESTS_PATH)/breakpoint.S
+
+
 	# $(RISCV_GCC) -c -march=rv32ima_zicsr -o $(TESTS_PATH)/scall.o -DTEST_FUNC_NAME=scall \
 	#	-DTEST_FUNC_TXT='"scall"' -DTEST_FUNC_RET=scall_ret $(TESTS_PATH)/scall.S
 	\
@@ -130,8 +137,10 @@ all:
 		-Wl,-m,elf32lriscv,-Bstatic,-T,firmware/linker.ld \
 		firmware/start.o $(TESTS_PATH)/*.o -lgcc
 	$(RISCV_OBJCOPY) -O binary firmware/firmware.elf firmware/firmware.bin
-	$(RISCV_OBJDUMP) -s -d firmware/firmware.elf > firmware/firmware.lst
+	$(RISCV_OBJDUMP) -d firmware/firmware.elf > firmware/firmware.lst
+	$(RISCV_NM) -n firmware/firmware.elf > firmware/firmware.sym
 	$(RISCV_OBJDUMP) -s -d firmware/start.o > firmware/start.lst
+	
 
 clean:
 	-rm firmware/*.o firmware/*.elf $(TESTS_PATH)/*.o

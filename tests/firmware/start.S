@@ -136,6 +136,8 @@ _start:
 	TEST(amominu_w)
 	TEST(amomin_w)
 	TEST(lrsc)
+	TEST(ma_addr)
+	TEST(breakpoint)
 	# TEST(scall)
 
 	TEST(simple)

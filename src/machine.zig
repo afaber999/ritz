@@ -52,9 +52,10 @@ pub const Machine = struct {
     timermatchl: u32 = 0,
 
 	// Note: only a few bits are used.  (Machine = 3, User = 0)
-	// Bits 0..1 = privilege.
-	// Bit 2 = WFI (Wait for interrupt)
-    extraflags: u32 = 0,
+    // Bits 0..1 = privilege.
+    // Bit 2 = WFI (Wait for interrupt)
+    // Bit 3 = halt request
+    extraflags: u32 = 3,
 
 
     pub fn init(allocator: std.mem.Allocator, start: u64, length: u64, dev: *Devices, out: *Output) !Machine {
@@ -89,6 +90,7 @@ pub const Machine = struct {
         self.csr_cycle = 0;
         self.timerh = 0;
         self.timerl = 0;
+        self.extraflags = 3;
     }
 
     pub fn next_cycle(self: *Machine) void {
@@ -152,6 +154,11 @@ pub const Machine = struct {
     }
 
     pub fn get8(self: *Machine, addr: u64) !i8 {
+
+        if (addr == 0x10000005) {
+            return 0x20;
+        }
+
         if (addr >= devBaseAddress) {
             return self.dev.get8(addr);
         }
