@@ -1,8 +1,12 @@
 const std = @import("std");
-const Devices = @import("devices.zig").Devices;
+//const Devices = @import("devices.zig").Devices;
 const Output = @import("output.zig").Output;
 const ClintDev = @import("devices/clint.zig").Clint;
 const Ns16550Dev = @import("devices/ns16550.zig").Ns16550;
+
+const DEFAULT_CLINT_MSIP_BASE: u64 = 0x02000000;
+const DEFAULT_NS16550_BASE: u64 = 0x10000000;
+const DEFAULT_NS16550_BASE_ALT: u64 = 0xf0000000;
 
 fn intCastCompat(comptime T: type, value: anytype) T {
     return @as(T, @intCast(value));
@@ -30,11 +34,53 @@ pub const CSR_MHARTID: u12 = 0xF14;
 const DEFAULT_MISA: u32 = (@as(u32, 1) << 30) | (@as(u32, 1) << 8) | (@as(u32, 1) << 12);
 
 pub const Machine = struct {
+    pub const MmioDevice = union(enum) {
+        clint: ClintDev,
+        ns16550: Ns16550Dev,
+
+        pub fn read8(self: *MmioDevice, machine: *Machine, addr: u64) ?u8 {
+            return switch (self.*) {
+                .clint => |*d| if (d.isMsipAddr(addr)) d.readMsipByte(machine.csr_mip, addr) else null,
+                .ns16550 => |*d| d.read8(addr),
+            };
+        }
+
+        pub fn write8(self: *MmioDevice, machine: *Machine, addr: u64, value: u8) bool {
+            return switch (self.*) {
+                .clint => |*d| blk: {
+                    if (!d.isMsipAddr(addr)) break :blk false;
+                    d.writeMsipByte(machine, addr, value);
+                    break :blk true;
+                },
+                .ns16550 => |*d| d.write8(addr, value),
+            };
+        }
+
+        pub fn write32(self: *MmioDevice, machine: *Machine, addr: u64, value: u32) bool {
+            return switch (self.*) {
+                .clint => |*d| blk: {
+                    if (addr != d.msip_base) break :blk false;
+                    d.writeMsipWord(machine, value);
+                    break :blk true;
+                },
+                .ns16550 => |*d| d.write32(addr, value),
+            };
+        }
+    };
+
+    pub fn defaultMmioDevices() [3]MmioDevice {
+        return .{
+            .{ .clint = ClintDev.init(DEFAULT_CLINT_MSIP_BASE) },
+            .{ .ns16550 = Ns16550Dev.init(DEFAULT_NS16550_BASE) },
+            .{ .ns16550 = Ns16550Dev.init(DEFAULT_NS16550_BASE_ALT) },
+        };
+    }
+
     data: []u8,
     start: u64,
     len: u64,
     memoryWarnings: i32 = 1,
-    dev: *Devices,
+    //dev: *Devices,
     out: *Output,
     allocator: std.mem.Allocator,
     csr_mstatus: u32 = 0,
@@ -52,8 +98,7 @@ pub const Machine = struct {
     timerl: u32 = 0,
     timermatchh: u32 = 0,
     timermatchl: u32 = 0,
-    clint: ClintDev,
-    ns16550: Ns16550Dev,
+    mmio_devices: std.ArrayList(MmioDevice),
 
 	// Note: only a few bits are used.  (Machine = 3, User = 0)
     // Bits 0..1 = privilege.
@@ -66,29 +111,32 @@ pub const Machine = struct {
         allocator: std.mem.Allocator,
         start: u64,
         length: u64,
-        dev: *Devices,
         out: *Output,
-        clint_msip_base: u64,
-        ns16550_base: u64,
+        mmio_devices: []const MmioDevice,
     ) !Machine {
         const data = try allocator.alloc(u8, length);
         @memset(data, 0xa5);
+
+        var mmio_list = std.ArrayList(MmioDevice){};
+        errdefer mmio_list.deinit(allocator);
+        try mmio_list.appendSlice(allocator, mmio_devices);
+
         return .{
             .data = data,
             .start = start,
             .len = length,
             .memoryWarnings = 1,
-            .dev = dev,
             .out = out,
             .allocator = allocator,
-            .clint = ClintDev.init(clint_msip_base),
-            .ns16550 = Ns16550Dev.init(ns16550_base),
+            .mmio_devices = mmio_list,
         };
     }
 
     pub fn deinit(self: *Machine) void {
         self.allocator.free(self.data);
+        self.mmio_devices.deinit(self.allocator);
     }
+
 
     pub fn resetSystemState(self: *Machine) void {
         self.csr_mstatus = 0;
@@ -169,17 +217,8 @@ pub const Machine = struct {
 
     pub fn get8(self: *Machine, addr: u64) !i8 {
 
-        if (self.clint.isMsipAddr(addr)) {
-            const b = self.clint.readMsipByte(self.csr_mip, addr);
-            return @bitCast(b);
-        }
-
-        if (self.ns16550.read8(addr)) |b| {
-            return @bitCast(b);
-        }
-
-        if (addr >= devBaseAddress) {
-            return self.dev.get8(addr);
+        for (self.mmio_devices.items) |*d| {
+            if (d.read8(self, addr)) |b| return @bitCast(b);
         }
 
         if (addr < self.start or addr >= self.start + self.len) {
@@ -193,30 +232,18 @@ pub const Machine = struct {
     }
 
     pub fn get16(self: *Machine, addr: u64) !i16 {
-        if (addr >= devBaseAddress) {
-            return self.dev.get16(addr);
-        }
-
         const b0: u16 = @as(u16, @as(u8, @bitCast(try self.get8(addr))));
         const b1: u16 = @as(u16, @as(u8, @bitCast(try self.get8(addr + 1))));
         return @bitCast(b0 | (b1 << 8));
     }
 
     pub fn get32(self: *Machine, addr: u64) !i32 {
-        if (addr >= devBaseAddress) {
-            return self.dev.get32(addr);
-        }
-
         const l: u32 = @as(u32, @as(u16, @bitCast(try self.get16(addr))));
         const h: u32 = @as(u32, @as(u16, @bitCast(try self.get16(addr + 2))));
         return @bitCast(l | (h << 16));
     }
 
     pub fn get64(self: *Machine, addr: u64) !i64 {
-        if (addr >= devBaseAddress) {
-            return self.dev.get64(addr);
-        }
-
         const l: u64 = @as(u64, @as(u32, @bitCast(try self.get32(addr))));
         const h: u64 = @as(u64, @as(u32, @bitCast(try self.get32(addr + 4))));
         return @bitCast(l | (h << 32));
@@ -224,17 +251,8 @@ pub const Machine = struct {
 
     pub fn set8(self: *Machine, addr: u64, val: u8) !void {
 
-        if (self.clint.isMsipAddr(addr)) {
-            self.clint.writeMsipByte(self, addr, val);
-            return;
-        }
-
-        if (self.ns16550.write8(addr, val)) {
-            return;
-        }
-
-        if (addr >= devBaseAddress) {
-            return self.dev.set8(addr, val);
+        for (self.mmio_devices.items) |*d| {
+            if (d.write8(self, addr, val)) return;
         }
 
         if (addr < self.start or addr >= self.start + self.len) {
@@ -248,42 +266,22 @@ pub const Machine = struct {
     }
 
     pub fn set16(self: *Machine, addr: u64, val: u16) !void {
-        if (self.ns16550.write8(addr, @truncate(val))) {
-            return;
-        }
-
-        if (addr >= devBaseAddress) {
-            return self.dev.set16(addr, val);
-        }
-
         try self.set8(addr, @as(u8, @truncate(val & 0x00ff)));
         try self.set8(addr + 1, @as(u8, @truncate((val >> 8) & 0x00ff)));
     }
 
     pub fn set32(self: *Machine, addr: u64, val: u32) !void {
 
-        if (addr == self.clint.msip_base) {
-            self.clint.writeMsipWord(self, val);
-            return;
+        for (self.mmio_devices.items) |*d| {
+            if (d.write32(self, addr, val)) return;
         }
 
-        if (self.ns16550.write8(addr, @truncate(val))) {
-            return;
-        }
-
-        if (addr >= devBaseAddress) {
-            return self.dev.set32(addr, val);
-        }
 
         try self.set16(addr, @as(u16, @truncate(val & 0x0000ffff)));
         try self.set16(addr + 2, @as(u16, @truncate((val >> 16) & 0x0000ffff)));
     }
 
     pub fn set64(self: *Machine, addr: u64, val: u64) !void {
-        if (addr >= devBaseAddress) {
-            return self.dev.set32(addr, @as(u32, @truncate(val)));
-        }
-
         try self.set32(addr, @as(u32, @truncate(val & 0x0000_0000_ffff_ffff)));
         try self.set32(addr + 4, @as(u32, @truncate((val >> 32) & 0x0000_0000_ffff_ffff)));
     }

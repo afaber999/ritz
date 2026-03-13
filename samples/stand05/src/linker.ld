@@ -1,4 +1,4 @@
-__stack_top = 0x2000;
+__stack_top = 0x8000;
 
 ENTRY(_start)
 

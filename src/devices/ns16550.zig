@@ -19,4 +19,11 @@ pub const Ns16550 = struct {
         std.debug.print("{c}", .{value});
         return true;
     }
+
+    pub fn write32(self: *const Ns16550, addr: u64, value: u32) bool {
+        if (addr != self.base) return false;
+        std.debug.print("{c}", .{@as(u8, @truncate(value))});
+        return true;
+    }
+
 };

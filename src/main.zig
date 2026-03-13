@@ -1,7 +1,6 @@
 const std = @import("std");
 const Machine = @import("machine.zig").Machine;
 const RV32CoreType = @import("rv32core.zig").RV32CoreType;
-const Devices = @import("devices.zig").Devices;
 const Output = @import("output.zig").Output;
 
 pub const RV32SOC = RV32CoreType(Machine);
@@ -293,19 +292,14 @@ pub fn main() !u8 {
     var out = Output{};
     defer out.deinit();
 
-    var dev = Devices.init(allocator, &out);
-    defer dev.deinit();
-    try dev.addConsole();
-    try dev.addMemcard();
+    var mmio_devices = Machine.defaultMmioDevices();
 
     var machine = try Machine.init(
         allocator,
         memstart,
         memlen,
-        &dev,
         &out,
-        0x02000000,
-        0x10000000,
+        mmio_devices[0..],
     );
     defer machine.deinit();
 
