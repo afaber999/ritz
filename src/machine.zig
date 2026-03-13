@@ -25,6 +25,8 @@ pub const CSR_MVENDORID: u12 = 0xF11;
 pub const CSR_MARCHID: u12 = 0xF12;
 pub const CSR_MIMPID: u12 = 0xF13;
 pub const CSR_MHARTID: u12 = 0xF14;
+const CLINT_MSIP_BASE: u64 = 0x02000000;
+const MIP_MSIP_BIT: u32 = (@as(u32, 1) << 3);
 const DEFAULT_MISA: u32 = (@as(u32, 1) << 30) | (@as(u32, 1) << 8) | (@as(u32, 1) << 12);
 
 pub const Machine = struct {
@@ -153,7 +155,30 @@ pub const Machine = struct {
         return true;
     }
 
+    fn isClintMsipAddr(_: *Machine, addr: u64) bool {
+        return addr >= CLINT_MSIP_BASE and addr < CLINT_MSIP_BASE + 4;
+    }
+
+    fn clintMsipValue(self: *Machine) u32 {
+        return if ((self.csr_mip & MIP_MSIP_BIT) != 0) 1 else 0;
+    }
+
+    fn clintWriteMsip(self: *Machine, value: u32) void {
+        if ((value & 1) != 0) {
+            self.csr_mip |= MIP_MSIP_BIT;
+            self.extraflags &= ~@as(u32, 4); // Wake from WFI on pending software interrupt.
+        } else {
+            self.csr_mip &= ~MIP_MSIP_BIT;
+        }
+    }
+
     pub fn get8(self: *Machine, addr: u64) !i8 {
+
+        if (self.isClintMsipAddr(addr)) {
+            const shift: u5 = @truncate((addr - CLINT_MSIP_BASE) * 8);
+            const b: u8 = @truncate((self.clintMsipValue() >> shift) & 0xff);
+            return @bitCast(b);
+        }
 
         if (addr == 0x10000005) {
             return 0x20;
@@ -205,6 +230,15 @@ pub const Machine = struct {
 
     pub fn set8(self: *Machine, addr: u64, val: u8) !void {
 
+        if (self.isClintMsipAddr(addr)) {
+            const shift: u5 = @truncate((addr - CLINT_MSIP_BASE) * 8);
+            const cur = self.clintMsipValue();
+            const mask = ~(@as(u32, 0xff) << shift);
+            const next = (cur & mask) | (@as(u32, val) << shift);
+            self.clintWriteMsip(next);
+            return;
+        }
+
         if (addr == 0x10000000) {
             std.debug.print("{c}", .{val});
             return;
@@ -239,6 +273,11 @@ pub const Machine = struct {
     }
 
     pub fn set32(self: *Machine, addr: u64, val: u32) !void {
+
+        if (addr == CLINT_MSIP_BASE) {
+            self.clintWriteMsip(val);
+            return;
+        }
 
         if (addr == 0x10000000) {
             std.debug.print("{c}", .{@as(u8, @truncate(val))});

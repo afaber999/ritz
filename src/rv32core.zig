@@ -269,14 +269,8 @@ pub fn RV32CoreType(comptime MachineType: type) type {
                         try self.out.print("{X:0>8}: 00100073 ebreak\n", .{self.pc});
                         return true;
                     },
-                    0x00000073 => {
-                        try self.execEcall(insn);
-                        return false;
-                    },
-                    0x10500073 => {
-                        try self.execWfi(insn);
-                        return false;
-                    },
+                    0x00000073 => try self.execEcall(insn),
+                    0x10500073 => try self.execWfi(insn),
                     else => return self.illegal(),
                 },
                 0b001 => try self.execCsrrw(insn),
