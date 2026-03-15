@@ -20,6 +20,10 @@ pub const Ns16550 = struct {
         return true;
     }
 
+    pub fn read32(_: *const Ns16550, _: u64) ?u32 {
+        return null;
+    }
+
     pub fn write32(self: *const Ns16550, addr: u64, value: u32) bool {
         if (addr != self.base) return false;
         std.debug.print("{c}", .{@as(u8, @truncate(value))});

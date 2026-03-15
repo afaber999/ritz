@@ -1,17 +1,41 @@
-const UART_BUF_REG_ADDR:usize = 0x10000000;
-const uart_buf_reg = @volatileCast(@as(*u32, @ptrFromInt(UART_BUF_REG_ADDR)));
+extern const UART_BUF_REG_ADDR: u8;
+extern const CLINT_BASE_ADDR: u8;
+extern const CLINT_MTIMECMP_ADDR: u8;
+extern const CLINT_MTIME_ADDR: u8;
 
-const CLINT_MTIMECMP_ADDR: usize = 0x02004000;
-const CLINT_MTIME_ADDR: usize = 0x0200BFF8;
-const clint_mtimecmp_lo = @volatileCast(@as(*u32, @ptrFromInt(CLINT_MTIMECMP_ADDR + 0)));
-const clint_mtimecmp_hi = @volatileCast(@as(*u32, @ptrFromInt(CLINT_MTIMECMP_ADDR + 4)));
-const clint_mtime_lo = @volatileCast(@as(*u32, @ptrFromInt(CLINT_MTIME_ADDR + 0)));
-const clint_mtime_hi = @volatileCast(@as(*u32, @ptrFromInt(CLINT_MTIME_ADDR + 4)));
+
+// It assumes CLINT mtime runs at about 10,000,000 ticks/sec (10 MHz).
+const TICKER_PER_SEC = 10_000_000;
+
+fn clintMtimecmpLo() *volatile u32 {
+    const base = @intFromPtr(&CLINT_MTIMECMP_ADDR);
+    return @ptrFromInt(base + 0);
+}
+
+fn uartBufReg() *volatile u32 {
+    const base = @intFromPtr(&UART_BUF_REG_ADDR);
+    return @ptrFromInt(base);
+}
+
+fn clintMtimecmpHi() *volatile u32 {
+    const base = @intFromPtr(&CLINT_MTIMECMP_ADDR);
+    return @ptrFromInt(base + 4);
+}
+
+fn clintMtimeLo() *volatile u32 {
+    const base = @intFromPtr(&CLINT_MTIME_ADDR);
+    return @ptrFromInt(base + 0);
+}
+
+fn clintMtimeHi() *volatile u32 {
+    const base = @intFromPtr(&CLINT_MTIME_ADDR);
+    return @ptrFromInt(base + 4);
+}
 
 extern fn timervec() callconv(.c) void;
 
 fn putByte(ch: u8) void {
-    uart_buf_reg.* = ch;
+    uartBufReg().* = ch;
 }
 
 fn putStr(comptime s: []const u8) void {
@@ -73,9 +97,9 @@ fn setupTimer() void {
     // Program next timer compare event using CLINT mtime/mtimecmp.
     var mtime: u64 = 0;
     while (true) {
-        const hi1 = clint_mtime_hi.*;
-        const lo = clint_mtime_lo.*;
-        const hi2 = clint_mtime_hi.*;
+        const hi1 = clintMtimeHi().*;
+        const lo = clintMtimeLo().*;
+        const hi2 = clintMtimeHi().*;
         if (hi1 == hi2) {
             mtime = (@as(u64, hi1) << 32) | @as(u64, lo);
             break;
@@ -83,9 +107,9 @@ fn setupTimer() void {
     }
     const mtimecmp = mtime + 20_000_000;
     // QEMU virt: program CLINT mtimecmp for hart 0 at 0x02004000.
-    clint_mtimecmp_hi.* = 0xFFFF_FFFF;
-    clint_mtimecmp_lo.* = @as(u32, @truncate(mtimecmp));
-    clint_mtimecmp_hi.* = @as(u32, @truncate(mtimecmp >> 32));
+    clintMtimecmpHi().* = 0xFFFF_FFFF;
+    clintMtimecmpLo().* = @as(u32, @truncate(mtimecmp));
+    clintMtimecmpHi().* = @as(u32, @truncate(mtimecmp >> 32));
 }
 
 fn enableTimerInterrupt() void {
@@ -102,23 +126,28 @@ fn enableTimerInterrupt() void {
 }
 
 export fn main() u32 {
-    putStr("enabling timer interrupt\n");
-    enableTimerInterrupt();
+
+    putStr("TASK main\n");
+    // putStr("enabling timer interrupt\n");
     setupTimer();
+    enableTimerInterrupt();
 
     while (true) {
-        putStr("mtime=");
+        putStr("TASK 1: =");
         putU64(getMtimeCsr());
         putStr("\n");
-
         delayMs(1000);
     }
+
+    putStr("Going down main\n");
     return 0;
 }
 
+
 fn delayMs(n : u32) void {
-    var i: u32 = 0;
-    while (i < 18_000_000 * n) : (i += 1) {
+    const start = getMtimeCsr();
+    const exp_time = start + ((TICKER_PER_SEC / 1000) * n);
+    while (getMtimeCsr() < exp_time) {
         asm volatile ("nop");
     }
 }

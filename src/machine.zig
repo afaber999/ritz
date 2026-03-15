@@ -38,10 +38,31 @@ pub const Machine = struct {
         clint: ClintDev,
         ns16550: Ns16550Dev,
 
+        pub fn reset(self: *MmioDevice) void {
+            switch (self.*) {
+                .clint => |*d| d.reset(),
+                .ns16550 => {},
+            }
+        }
+
+        pub fn updateCycle(self: *MmioDevice, machine: *Machine) void {
+            switch (self.*) {
+                .clint => |*d| d.updateTimerInterrupt(machine),
+                .ns16550 => {},
+            }
+        }
+
         pub fn read8(self: *MmioDevice, machine: *Machine, addr: u64) ?u8 {
             return switch (self.*) {
                 .clint => |*d| if (d.isMsipAddr(addr)) d.readMsipByte(machine.csr_mip, addr) else null,
                 .ns16550 => |*d| d.read8(addr),
+            };
+        }
+
+        pub fn read32(self: *MmioDevice, machine: *Machine, addr: u64) ?u32 {
+            return switch (self.*) {
+                .clint => |*d| d.read32(machine, addr),
+                .ns16550 => |*d| d.read32(addr),
             };
         }
 
@@ -58,11 +79,7 @@ pub const Machine = struct {
 
         pub fn write32(self: *MmioDevice, machine: *Machine, addr: u64, value: u32) bool {
             return switch (self.*) {
-                .clint => |*d| blk: {
-                    if (addr != d.msip_base) break :blk false;
-                    d.writeMsipWord(machine, value);
-                    break :blk true;
-                },
+                .clint => |*d| d.write32(machine, addr, value),
                 .ns16550 => |*d| d.write32(addr, value),
             };
         }
@@ -96,8 +113,6 @@ pub const Machine = struct {
     csr_cycle: u64 = 0,
     timerh: u32 = 0,
     timerl: u32 = 0,
-    timermatchh: u32 = 0,
-    timermatchl: u32 = 0,
     mmio_devices: std.ArrayList(MmioDevice),
 
 	// Note: only a few bits are used.  (Machine = 3, User = 0)
@@ -152,6 +167,7 @@ pub const Machine = struct {
         self.csr_cycle = 0;
         self.timerh = 0;
         self.timerl = 0;
+        for (self.mmio_devices.items) |*d| d.reset();
         self.extraflags = 3;
     }
 
@@ -161,15 +177,7 @@ pub const Machine = struct {
         self.timerl = intCastCompat(u32, intCastCompat(u64, t) & 0xFFFF_FFFF);
         self.timerh = intCastCompat(u32, intCastCompat(u64, t) >> 32);
 
-        // Handle timer interrupt (MTIP bit in mip).
-        if ((self.timermatchh != 0 or self.timermatchl != 0) and
-            ((self.timerh > self.timermatchh) or (self.timerh == self.timermatchh and self.timerl > self.timermatchl)))
-        {
-            self.extraflags &= ~@as(u32, 4); // Clear WFI
-            self.csr_mip |= (@as(u32, 1) << 7);
-        } else {
-            self.csr_mip &= ~(@as(u32, 1) << 7);
-        }
+        for (self.mmio_devices.items) |*d| d.updateCycle(self);
     }
 
     pub fn csrRead(self: *Machine, csr: u12) ?u32 {
@@ -207,8 +215,8 @@ pub const Machine = struct {
             CSR_MEPC => self.csr_mepc = value,
             CSR_MCAUSE => self.csr_mcause = value,
             CSR_SCOUNTEREN => self.csr_scounteren = value,
-            CSR_TIME => self.timermatchl = value,
-            CSR_TIMEH => self.timermatchh = value,
+            CSR_TIME => self.timerl = value,
+            CSR_TIMEH => self.timerh = value,
             CSR_CYCLE, CSR_CYCLEH, CSR_MISA, CSR_MVENDORID, CSR_MARCHID, CSR_MIMPID, CSR_MHARTID => return false,
             else => return false,
         }
@@ -238,6 +246,10 @@ pub const Machine = struct {
     }
 
     pub fn get32(self: *Machine, addr: u64) !i32 {
+        for (self.mmio_devices.items) |*d| {
+            if (d.read32(self, addr)) |v| return @bitCast(v);
+        }
+
         const l: u32 = @as(u32, @as(u16, @bitCast(try self.get16(addr))));
         const h: u32 = @as(u32, @as(u16, @bitCast(try self.get16(addr + 2))));
         return @bitCast(l | (h << 16));
@@ -348,5 +360,3 @@ pub const Machine = struct {
         try self.out.print(" *{s}*\n", .{std.mem.sliceTo(ascii[0..], 0)});
     }
 };
-
-pub const Memory = Machine;

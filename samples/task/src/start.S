@@ -1,106 +1,114 @@
-/* start.S - RV32 M-mode trap demo for QEMU virt */
-
-    .section .text
-    .globl _start
-
-    .equ UART0_BASE,    0x10000000
-    .equ UART_THR,      0
-    .equ UART_LSR,      5
-    .equ UART_LSR_THRE, 0x20
+  .text
+  .global _start
+  .type   _start, @function
 
 _start:
-    la      sp, _stack_top
 
-    /* Point mtvec at trap handler */
-    la      t0, trap_handler
-    csrw    mtvec, t0
+  # Initialize global pointer
+.option push
+.option norelax
+	la		gp,__global_pointer$
+	la		sp,_sstack  
+.option pop
 
-    la      a0, msg_boot
-    jal     ra, puts
+    # Clear the bss segment
+    la      a0,__bss_start      # a0 = start zeroing memory here
+    la      a1,__BSS_END__      # a1 = end zeroing here-1
 
-    la      a0, msg_before
-    jal     ra, puts
+clear_bss:
+    bgeu    a0,a1,done_bss      # while (!(a0 >= a1))
+    sb      x0,0(a0)            #   *a0 = 0;
+    addi    a0,a0,1             #   ++a0
+    beq     x0,x0,clear_bss
+done_bss:
 
-    /* Intentionally cause M-mode exception trap */
-    ecall
+    # call zig
+    call    main
 
-    la      a0, msg_after
-    jal     ra, puts
+	  # abort execution here
+    ebreak
 
-hang:
-    wfi
-    j       hang
+.align 4
+.global timervec
+.global timervec_test
+.extern CLINT_MTIMECMP_ADDR
+.extern CLINT_MTIME_ADDR
+.extern UART_BUF_REG_ADDR
 
-/* trap handler for M-mode exceptions */
-trap_handler:
-    addi    sp, sp, -32
-    sw      ra, 28(sp)
-    sw      t0, 24(sp)
-    sw      t1, 20(sp)
-    sw      t2, 16(sp)
-    sw      a0, 12(sp)
-    sw      a1, 8(sp)
-    sw      a2, 4(sp)
+timervec:
+  csrrw a0, mscratch, a0
 
-    csrr    t0, mcause
-    li      t1, 11              /* ECALL from M-mode */
-    bne     t0, t1, trap_unexpected
+timervec_body:
+  la x10, _save_area
+  sw a1, 0(x10)
+  sw a2, 4(x10)
+  sw t0, 8(x10)
+  sw t1, 12(x10)
+  sw t2, 16(x10)
+  sw t3, 20(x10)
 
-    la      a0, msg_in_handler
-    jal     ra, puts
+  # Debug cause check: '@' for machine timer interrupt, '!' otherwise.
+  csrr t3, mcause
+  li t2, 0x80000007
+  bne t3, t2, trap_not_timer
 
-    /* Skip the trapping ecall instruction */
-    csrr    t0, mepc
-    addi    t0, t0, 4
-    csrw    mepc, t0
-    j       trap_exit
+  # Re-arm timer interrupt on QEMU virt using CLINT MMIO.
+  la t3, CLINT_MTIME_ADDR
+  lw t0, 0(t3)
+  lw t1, 4(t3)
+  li t2, 20000000   # about two seconds, assume 10MHz clock mtime
+  add t0, t0, t2
+  sltu t2, t0, t2
+  add t1, t1, t2
 
-trap_unexpected:
-    la      a0, msg_unexpected
-    jal     ra, puts
-1:
-    j       1b
+  la t3, CLINT_MTIMECMP_ADDR
+  li a1, -1
+  sw a1, 4(t3)
+  sw t0, 0(t3)
+  sw t1, 4(t3)
 
-trap_exit:
-    lw      a2, 4(sp)
-    lw      a1, 8(sp)
-    lw      a0, 12(sp)
-    lw      t2, 16(sp)
-    lw      t1, 20(sp)
-    lw      t0, 24(sp)
-    lw      ra, 28(sp)
-    addi    sp, sp, 32
-    mret
+  la a0, UART_BUF_REG_ADDR
+  addi a1, x0, '@'
+  sw a1, 0(a0)
+  j trap_done_marker
 
-/* a0 = pointer to NUL-terminated string */
-puts:
-    lbu     t0, 0(a0)
-    beqz    t0, puts_ret
-    mv      a1, t0
-    jal     ra, putc
-    addi    a0, a0, 1
-    j       puts
-puts_ret:
-    ret
+trap_not_timer:
+  la a0, UART_BUF_REG_ADDR
+  addi a1, x0, '!'
+  sw a1, 0(a0)
 
-/* a1 = character */
-putc:
-2:
-    li      t0, UART0_BASE
-    lbu     t1, UART_LSR(t0)
-    andi    t1, t1, UART_LSR_THRE
-    beqz    t1, 2b
-    sb      a1, UART_THR(t0)
-    ret
+trap_done_marker:
+  la a0, _save_area
+  lw a1, 0(a0)
+  lw a2, 4(a0)
+  lw t0, 8(a0)
+  lw t1, 12(a0)
+  lw t2, 16(a0)
+  lw t3, 20(a0)
 
-    .section .rodata
-msg_boot:        .asciz "RV32 M-mode trap demo\r\n"
-msg_before:      .asciz "About to execute ECALL...\r\n"
-msg_in_handler:  .asciz "Trap handler: ECALL from M-mode\r\n"
-msg_after:       .asciz "Returned from trap via MRET\r\n"
-msg_unexpected:  .asciz "Unexpected trap cause\r\n"
+  csrrw a0, mscratch, a0
+  mret
 
-    .section .stack, "aw", @nobits
-    .align 4
-stack_area:      .space 2048
-_stack_top:
+timervec_test:
+  la a0, _save_area
+  sw a1, 0(a0)
+  sw a2, 4(a0)
+
+  la a0, UART_BUF_REG_ADDR
+  addi a1, x0, '@'
+  sw a1, 0(a0)
+  sw a1, 0(a0)
+  sw a1, 0(a0)
+  sw a1, 0(a0)
+  sw a1, 0(a0)
+  sw a1, 0(a0)
+
+  lw a1, 0(a0)
+  lw a2, 4(a0)
+  ret
+
+
+.size  _start, .-_start
+
+_save_area:
+  .space 128
