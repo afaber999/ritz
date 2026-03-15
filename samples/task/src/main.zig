@@ -1,11 +1,120 @@
 extern const UART_BUF_REG_ADDR: u8;
-extern const CLINT_BASE_ADDR: u8;
+extern const @"__global_pointer$": u8;
 extern const CLINT_MTIMECMP_ADDR: u8;
 extern const CLINT_MTIME_ADDR: u8;
+extern const _task_exit: u8;
 
 
 // It assumes CLINT mtime runs at about 10,000,000 ticks/sec (10 MHz).
 const TICKER_PER_SEC = 10_000_000;
+const TIMER_INTERVAL_TICKS = 20_000_000;
+
+const StackSize = 512;
+
+pub const TaskContext = extern struct {
+    ra: u32 = 0,
+    sp: u32 = 0,
+    gp: u32 = 0,
+    tp: u32 = 0,
+    t0: u32 = 0,
+    t1: u32 = 0,
+    t2: u32 = 0,
+    s0: u32 = 0,
+    s1: u32 = 0,
+    a0: u32 = 0,
+    a1: u32 = 0,
+    a2: u32 = 0,
+    a3: u32 = 0,
+    a4: u32 = 0,
+    a5: u32 = 0,
+    a6: u32 = 0,
+    a7: u32 = 0,
+    s2: u32 = 0,
+    s3: u32 = 0,
+    s4: u32 = 0,
+    s5: u32 = 0,
+    s6: u32 = 0,
+    s7: u32 = 0,
+    s8: u32 = 0,
+    s9: u32 = 0,
+    s10: u32 = 0,
+    s11: u32 = 0,
+    t3: u32 = 0,
+    t4: u32 = 0,
+    t5: u32 = 0,
+    t6: u32 = 0,
+    mepc: u32 = 0,
+};
+
+const machine_timer_interrupt_mcause: u32 = 0x80000007;
+
+export var current_task_ctx: u32 = 0;
+export var task1_context: TaskContext = .{};
+export var task2_context: TaskContext = .{};
+export var task3_context: TaskContext = .{};
+export var task2_stack: [StackSize]u8 align(16) = [_]u8{0} ** StackSize;
+export var task3_stack: [StackSize]u8 align(16) = [_]u8{0} ** StackSize;
+
+fn stackTop(stack: *[StackSize]u8) u32 {
+    return @as(u32, @truncate(@intFromPtr(stack) + StackSize));
+}
+
+fn putChar(ch: u8) void {
+    putByte(ch);
+}
+
+fn initTaskContext(ctx: *TaskContext, entry: *const fn () callconv(.c) u32, stack: *[StackSize]u8) void {
+    ctx.* = .{};
+    ctx.ra = @as(u32, @truncate(@intFromPtr(&_task_exit)));
+    ctx.sp = stackTop(stack);
+    ctx.gp = @as(u32, @truncate(@intFromPtr(&@"__global_pointer$")));
+    ctx.mepc = @as(u32, @truncate(@intFromPtr(entry)));
+}
+
+fn programTimerAfter(delta: u64) void {
+    var mtime: u64 = 0;
+    while (true) {
+        const hi1 = clintMtimeHi().*;
+        const lo = clintMtimeLo().*;
+        const hi2 = clintMtimeHi().*;
+        if (hi1 == hi2) {
+            mtime = (@as(u64, hi1) << 32) | @as(u64, lo);
+            break;
+        }
+    }
+
+    const mtimecmp = mtime + delta;
+    clintMtimecmpHi().* = 0xFFFF_FFFF;
+    clintMtimecmpLo().* = @as(u32, @truncate(mtimecmp));
+    clintMtimecmpHi().* = @as(u32, @truncate(mtimecmp >> 32));
+}
+
+fn nextTask(current: *TaskContext) *TaskContext {
+    if (current == &task1_context) return &task2_context;
+    if (current == &task2_context) return &task3_context;
+    return &task1_context;
+}
+
+export fn schedulerInit() callconv(.c) void {
+    current_task_ctx = @as(u32, @truncate(@intFromPtr(&task1_context)));
+    task1_context = .{};
+    initTaskContext(&task2_context, main2, &task2_stack);
+    initTaskContext(&task3_context, main3, &task3_stack);
+}
+
+export fn handleTrap(current_ctx: *TaskContext, mcause: u32) callconv(.c) *TaskContext {
+    if (mcause == machine_timer_interrupt_mcause) {
+        programTimerAfter(TIMER_INTERVAL_TICKS);
+        putChar('@');
+        const next = nextTask(current_ctx);
+        current_task_ctx = @as(u32, @truncate(@intFromPtr(next)));
+        return next;
+    }
+
+    putChar('!');
+    current_task_ctx = @as(u32, @truncate(@intFromPtr(current_ctx)));
+    return current_ctx;
+}
 
 fn clintMtimecmpLo() *volatile u32 {
     const base = @intFromPtr(&CLINT_MTIMECMP_ADDR);
@@ -94,22 +203,7 @@ fn getMtimeCsr() u64 {
 
 
 fn setupTimer() void {
-    // Program next timer compare event using CLINT mtime/mtimecmp.
-    var mtime: u64 = 0;
-    while (true) {
-        const hi1 = clintMtimeHi().*;
-        const lo = clintMtimeLo().*;
-        const hi2 = clintMtimeHi().*;
-        if (hi1 == hi2) {
-            mtime = (@as(u64, hi1) << 32) | @as(u64, lo);
-            break;
-        }
-    }
-    const mtimecmp = mtime + 20_000_000;
-    // QEMU virt: program CLINT mtimecmp for hart 0 at 0x02004000.
-    clintMtimecmpHi().* = 0xFFFF_FFFF;
-    clintMtimecmpLo().* = @as(u32, @truncate(mtimecmp));
-    clintMtimecmpHi().* = @as(u32, @truncate(mtimecmp >> 32));
+    programTimerAfter(TIMER_INTERVAL_TICKS);
 }
 
 fn enableTimerInterrupt() void {
@@ -158,7 +252,6 @@ export fn main2() u32 {
 export fn main() u32 {
 
     putStr("TASK main\n");
-    // putStr("enabling timer interrupt\n");
     setupTimer();
     enableTimerInterrupt();
 

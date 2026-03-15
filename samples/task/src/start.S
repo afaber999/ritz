@@ -35,11 +35,9 @@
 
   .global _start
   .type _start, @function
-  .extern main2
-  .extern main3
-  .extern CLINT_MTIMECMP_ADDR
-  .extern CLINT_MTIME_ADDR
-  .extern UART_BUF_REG_ADDR
+  .extern schedulerInit
+  .extern handleTrap
+  .extern current_task_ctx
 
 _start:
 
@@ -61,37 +59,14 @@ clear_bss:
   beq x0, x0, clear_bss
 
 done_bss:
-  # Prepare task 2 so the scheduler can jump into main2 on the first tick.
-  la t0, _task2_context
-  la t1, _task_exit
-  sw t1, CTX_RA(t0)
-  la t1, _task2_stack_top
-  sw t1, CTX_SP(t0)
-  la t1, __global_pointer$
-  sw t1, CTX_GP(t0)
-  la t1, main2
-  sw t1, CTX_MEPC(t0)
-
-  # Prepare task 3 so the scheduler can jump into main3.
-  la t0, _task3_context
-  la t1, _task_exit
-  sw t1, CTX_RA(t0)
-  la t1, _task3_stack_top
-  sw t1, CTX_SP(t0)
-  la t1, __global_pointer$
-  sw t1, CTX_GP(t0)
-  la t1, main3
-  sw t1, CTX_MEPC(t0)
-
-  # Task 1 starts by calling main directly. Its live register state is saved
-  # into _task1_context on the first timer interrupt.
-  la t0, _current_task_ctx
-  la t1, _task1_context
-  sw t1, 0(t0)
+  call schedulerInit
+  la t0, current_task_ctx
+  lw t1, 0(t0)
   csrw mscratch, t1
 
   call main
 
+  .global _task_exit
 _task_exit:
   ebreak
 
@@ -139,60 +114,11 @@ timervec:
   csrr t0, mepc
   sw t0, CTX_MEPC(a0)
 
-  csrr t3, mcause
-  li t2, 0x80000007
-  bne t3, t2, trap_not_timer
-
-  # Re-arm the timer with the existing interval.
-  la t3, CLINT_MTIME_ADDR
-  lw t0, 0(t3)
-  lw t1, 4(t3)
-  li t2, 20000000
-  add t0, t0, t2
-  sltu t2, t0, t2
-  add t1, t1, t2
-
-  la t3, CLINT_MTIMECMP_ADDR
-  li a1, -1
-  sw a1, 4(t3)
-  sw t0, 0(t3)
-  sw t1, 4(t3)
-
-  # Keep the debug marker.
-  la t3, UART_BUF_REG_ADDR
-  addi a1, x0, '@'
-  sw a1, 0(t3)
-
-  # Switch to the next task in round-robin order.
-  la t0, _current_task_ctx
-  lw t1, 0(t0)
-  la t2, _task1_context
-  beq t1, t2, switch_to_task2
-  la t2, _task2_context
-  beq t1, t2, switch_to_task3
-  la t1, _task1_context
-  j restore_context
-
-switch_to_task2:
-  la t1, _task2_context
-  j restore_context
-
-switch_to_task3:
-  la t1, _task3_context
-  j restore_context
-
-trap_not_timer:
-  la t3, UART_BUF_REG_ADDR
-  addi a1, x0, '!'
-  sw a1, 0(t3)
-  la t0, _current_task_ctx
-  lw t1, 0(t0)
+  csrr a1, mcause
+  call handleTrap
 
 restore_context:
-  la t0, _current_task_ctx
-  sw t1, 0(t0)
-  csrw mscratch, t1
-  mv a0, t1
+  csrw mscratch, a0
 
   lw t0, CTX_MEPC(a0)
   csrw mepc, t0
@@ -235,32 +161,7 @@ timervec_test:
   addi t1, x0, '@'
   sw t1, 0(t0)
   ret
-
-.size _start, .-_start
-
+    call schedulerInit
 .bss
 .align 4
 _current_task_ctx:
-  .space 4
-
-.align 4
-_task1_context:
-  .space CTX_SIZE
-
-.align 4
-_task2_context:
-  .space CTX_SIZE
-
-.align 4
-_task2_stack:
-  .space 512
-_task2_stack_top:
-
-.align 4
-_task3_context:
-  .space CTX_SIZE
-
-.align 4
-_task3_stack:
-  .space 512
-_task3_stack_top:
