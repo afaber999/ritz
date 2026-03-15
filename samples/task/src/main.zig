@@ -125,6 +125,21 @@ fn enableTimerInterrupt() void {
     );
 }
 
+export fn main3() u32 {
+
+    putStr("TASK main3\n");
+
+    while (true) {
+        putStr("TASK 3: =");
+        putU64(getMtimeCsr());
+        putStr("\n");
+        delayMs(1300);
+    }
+
+    putStr("Going down main\n");
+    return 0;
+}
+
 export fn main2() u32 {
 
     putStr("TASK main2\n");

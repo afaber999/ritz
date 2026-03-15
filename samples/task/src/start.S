@@ -36,6 +36,7 @@
   .global _start
   .type _start, @function
   .extern main2
+  .extern main3
   .extern CLINT_MTIMECMP_ADDR
   .extern CLINT_MTIME_ADDR
   .extern UART_BUF_REG_ADDR
@@ -69,6 +70,17 @@ done_bss:
   la t1, __global_pointer$
   sw t1, CTX_GP(t0)
   la t1, main2
+  sw t1, CTX_MEPC(t0)
+
+  # Prepare task 3 so the scheduler can jump into main3.
+  la t0, _task3_context
+  la t1, _task_exit
+  sw t1, CTX_RA(t0)
+  la t1, _task3_stack_top
+  sw t1, CTX_SP(t0)
+  la t1, __global_pointer$
+  sw t1, CTX_GP(t0)
+  la t1, main3
   sw t1, CTX_MEPC(t0)
 
   # Task 1 starts by calling main directly. Its live register state is saved
@@ -151,16 +163,22 @@ timervec:
   addi a1, x0, '@'
   sw a1, 0(t3)
 
-  # Switch to the other task.
+  # Switch to the next task in round-robin order.
   la t0, _current_task_ctx
   lw t1, 0(t0)
   la t2, _task1_context
   beq t1, t2, switch_to_task2
+  la t2, _task2_context
+  beq t1, t2, switch_to_task3
   la t1, _task1_context
   j restore_context
 
 switch_to_task2:
   la t1, _task2_context
+  j restore_context
+
+switch_to_task3:
+  la t1, _task3_context
   j restore_context
 
 trap_not_timer:
@@ -237,3 +255,12 @@ _task2_context:
 _task2_stack:
   .space 512
 _task2_stack_top:
+
+.align 4
+_task3_context:
+  .space CTX_SIZE
+
+.align 4
+_task3_stack:
+  .space 512
+_task3_stack_top:
