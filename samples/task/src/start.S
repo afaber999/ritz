@@ -1,62 +1,141 @@
-  .text
+.text
+  .equ CTX_RA, 0
+  .equ CTX_SP, 4
+  .equ CTX_GP, 8
+  .equ CTX_TP, 12
+  .equ CTX_T0, 16
+  .equ CTX_T1, 20
+  .equ CTX_T2, 24
+  .equ CTX_S0, 28
+  .equ CTX_S1, 32
+  .equ CTX_A0, 36
+  .equ CTX_A1, 40
+  .equ CTX_A2, 44
+  .equ CTX_A3, 48
+  .equ CTX_A4, 52
+  .equ CTX_A5, 56
+  .equ CTX_A6, 60
+  .equ CTX_A7, 64
+  .equ CTX_S2, 68
+  .equ CTX_S3, 72
+  .equ CTX_S4, 76
+  .equ CTX_S5, 80
+  .equ CTX_S6, 84
+  .equ CTX_S7, 88
+  .equ CTX_S8, 92
+  .equ CTX_S9, 96
+  .equ CTX_S10, 100
+  .equ CTX_S11, 104
+  .equ CTX_T3, 108
+  .equ CTX_T4, 112
+  .equ CTX_T5, 116
+  .equ CTX_T6, 120
+  .equ CTX_MEPC, 124
+  .equ CTX_SIZE, 128
+
   .global _start
-  .type   _start, @function
+  .type _start, @function
+  .extern main2
+  .extern CLINT_MTIMECMP_ADDR
+  .extern CLINT_MTIME_ADDR
+  .extern UART_BUF_REG_ADDR
 
 _start:
 
-  # Initialize global pointer
+  # Initialize global pointer and initial stack.
 .option push
 .option norelax
-	la		gp,__global_pointer$
-	la		sp,_sstack  
+  la gp, __global_pointer$
+  la sp, _sstack
 .option pop
 
-    # Clear the bss segment
-    la      a0,__bss_start      # a0 = start zeroing memory here
-    la      a1,__BSS_END__      # a1 = end zeroing here-1
+  # Clear the bss segment.
+  la a0, __bss_start
+  la a1, __BSS_END__
 
 clear_bss:
-    bgeu    a0,a1,done_bss      # while (!(a0 >= a1))
-    sb      x0,0(a0)            #   *a0 = 0;
-    addi    a0,a0,1             #   ++a0
-    beq     x0,x0,clear_bss
+  bgeu a0, a1, done_bss
+  sb x0, 0(a0)
+  addi a0, a0, 1
+  beq x0, x0, clear_bss
+
 done_bss:
+  # Prepare task 2 so the scheduler can jump into main2 on the first tick.
+  la t0, _task2_context
+  la t1, _task_exit
+  sw t1, CTX_RA(t0)
+  la t1, _task2_stack_top
+  sw t1, CTX_SP(t0)
+  la t1, __global_pointer$
+  sw t1, CTX_GP(t0)
+  la t1, main2
+  sw t1, CTX_MEPC(t0)
 
-    # call zig
-    call    main
+  # Task 1 starts by calling main directly. Its live register state is saved
+  # into _task1_context on the first timer interrupt.
+  la t0, _current_task_ctx
+  la t1, _task1_context
+  sw t1, 0(t0)
+  csrw mscratch, t1
 
-	  # abort execution here
-    ebreak
+  call main
+
+_task_exit:
+  ebreak
 
 .align 4
 .global timervec
 .global timervec_test
-.extern CLINT_MTIMECMP_ADDR
-.extern CLINT_MTIME_ADDR
-.extern UART_BUF_REG_ADDR
 
 timervec:
+  # Swap a0 with mscratch so a0 becomes the current task context pointer.
   csrrw a0, mscratch, a0
 
-timervec_body:
-  la x10, _save_area
-  sw a1, 0(x10)
-  sw a2, 4(x10)
-  sw t0, 8(x10)
-  sw t1, 12(x10)
-  sw t2, 16(x10)
-  sw t3, 20(x10)
+  # Save all integer registers plus mepc for the interrupted task.
+  sw ra, CTX_RA(a0)
+  sw sp, CTX_SP(a0)
+  sw gp, CTX_GP(a0)
+  sw tp, CTX_TP(a0)
+  sw t0, CTX_T0(a0)
+  sw t1, CTX_T1(a0)
+  sw t2, CTX_T2(a0)
+  sw s0, CTX_S0(a0)
+  sw s1, CTX_S1(a0)
+  sw a1, CTX_A1(a0)
+  sw a2, CTX_A2(a0)
+  sw a3, CTX_A3(a0)
+  sw a4, CTX_A4(a0)
+  sw a5, CTX_A5(a0)
+  sw a6, CTX_A6(a0)
+  sw a7, CTX_A7(a0)
+  sw s2, CTX_S2(a0)
+  sw s3, CTX_S3(a0)
+  sw s4, CTX_S4(a0)
+  sw s5, CTX_S5(a0)
+  sw s6, CTX_S6(a0)
+  sw s7, CTX_S7(a0)
+  sw s8, CTX_S8(a0)
+  sw s9, CTX_S9(a0)
+  sw s10, CTX_S10(a0)
+  sw s11, CTX_S11(a0)
+  sw t3, CTX_T3(a0)
+  sw t4, CTX_T4(a0)
+  sw t5, CTX_T5(a0)
+  sw t6, CTX_T6(a0)
+  csrr t0, mscratch
+  sw t0, CTX_A0(a0)
+  csrr t0, mepc
+  sw t0, CTX_MEPC(a0)
 
-  # Debug cause check: '@' for machine timer interrupt, '!' otherwise.
   csrr t3, mcause
   li t2, 0x80000007
   bne t3, t2, trap_not_timer
 
-  # Re-arm timer interrupt on QEMU virt using CLINT MMIO.
+  # Re-arm the timer with the existing interval.
   la t3, CLINT_MTIME_ADDR
   lw t0, 0(t3)
   lw t1, 4(t3)
-  li t2, 20000000   # about two seconds, assume 10MHz clock mtime
+  li t2, 20000000
   add t0, t0, t2
   sltu t2, t0, t2
   add t1, t1, t2
@@ -67,48 +146,94 @@ timervec_body:
   sw t0, 0(t3)
   sw t1, 4(t3)
 
-  la a0, UART_BUF_REG_ADDR
+  # Keep the debug marker.
+  la t3, UART_BUF_REG_ADDR
   addi a1, x0, '@'
-  sw a1, 0(a0)
-  j trap_done_marker
+  sw a1, 0(t3)
+
+  # Switch to the other task.
+  la t0, _current_task_ctx
+  lw t1, 0(t0)
+  la t2, _task1_context
+  beq t1, t2, switch_to_task2
+  la t1, _task1_context
+  j restore_context
+
+switch_to_task2:
+  la t1, _task2_context
+  j restore_context
 
 trap_not_timer:
-  la a0, UART_BUF_REG_ADDR
+  la t3, UART_BUF_REG_ADDR
   addi a1, x0, '!'
-  sw a1, 0(a0)
+  sw a1, 0(t3)
+  la t0, _current_task_ctx
+  lw t1, 0(t0)
 
-trap_done_marker:
-  la a0, _save_area
-  lw a1, 0(a0)
-  lw a2, 4(a0)
-  lw t0, 8(a0)
-  lw t1, 12(a0)
-  lw t2, 16(a0)
-  lw t3, 20(a0)
+restore_context:
+  la t0, _current_task_ctx
+  sw t1, 0(t0)
+  csrw mscratch, t1
+  mv a0, t1
 
-  csrrw a0, mscratch, a0
+  lw t0, CTX_MEPC(a0)
+  csrw mepc, t0
+
+  lw ra, CTX_RA(a0)
+  lw sp, CTX_SP(a0)
+  lw gp, CTX_GP(a0)
+  lw tp, CTX_TP(a0)
+  lw t1, CTX_T1(a0)
+  lw t2, CTX_T2(a0)
+  lw s0, CTX_S0(a0)
+  lw s1, CTX_S1(a0)
+  lw a1, CTX_A1(a0)
+  lw a2, CTX_A2(a0)
+  lw a3, CTX_A3(a0)
+  lw a4, CTX_A4(a0)
+  lw a5, CTX_A5(a0)
+  lw a6, CTX_A6(a0)
+  lw a7, CTX_A7(a0)
+  lw s2, CTX_S2(a0)
+  lw s3, CTX_S3(a0)
+  lw s4, CTX_S4(a0)
+  lw s5, CTX_S5(a0)
+  lw s6, CTX_S6(a0)
+  lw s7, CTX_S7(a0)
+  lw s8, CTX_S8(a0)
+  lw s9, CTX_S9(a0)
+  lw s10, CTX_S10(a0)
+  lw s11, CTX_S11(a0)
+  lw t3, CTX_T3(a0)
+  lw t4, CTX_T4(a0)
+  lw t5, CTX_T5(a0)
+  lw t6, CTX_T6(a0)
+  lw t0, CTX_T0(a0)
+  lw a0, CTX_A0(a0)
   mret
 
 timervec_test:
-  la a0, _save_area
-  sw a1, 0(a0)
-  sw a2, 4(a0)
-
-  la a0, UART_BUF_REG_ADDR
-  addi a1, x0, '@'
-  sw a1, 0(a0)
-  sw a1, 0(a0)
-  sw a1, 0(a0)
-  sw a1, 0(a0)
-  sw a1, 0(a0)
-  sw a1, 0(a0)
-
-  lw a1, 0(a0)
-  lw a2, 4(a0)
+  la t0, UART_BUF_REG_ADDR
+  addi t1, x0, '@'
+  sw t1, 0(t0)
   ret
 
+.size _start, .-_start
 
-.size  _start, .-_start
+.bss
+.align 4
+_current_task_ctx:
+  .space 4
 
-_save_area:
-  .space 128
+.align 4
+_task1_context:
+  .space CTX_SIZE
+
+.align 4
+_task2_context:
+  .space CTX_SIZE
+
+.align 4
+_task2_stack:
+  .space 512
+_task2_stack_top:
