@@ -38,6 +38,7 @@
   .extern schedulerInit
   .extern handleTrap
   .extern current_task_ctx
+  .extern UART_BUF_REG_ADDR
 
 _start:
 
@@ -161,7 +162,5 @@ timervec_test:
   addi t1, x0, '@'
   sw t1, 0(t0)
   ret
-    call schedulerInit
-.bss
-.align 4
-_current_task_ctx:
+
+.size _start, .-_start
