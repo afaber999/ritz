@@ -4,3 +4,4 @@ zig-out/
 *.bin
 *.lst
 *.elf
+task*.txt

@@ -16,18 +16,7 @@ fn enableTimerInterrupt() void {
 }
 
 export fn main() u32 {
-
-    tasks.putStr("TASK main\n");
     tasks.setupTimer();
     enableTimerInterrupt();
-
-    while (true) {
-        tasks.putStr("TASK 1: =");
-        tasks.putU64(tasks.getMtimeCsr());
-        tasks.putStr("\n");
-        tasks.delayMs(1000);
-    }
-
-    tasks.putStr("Going down main\n");
-    return 0;
+    tasks.runTaskLoop("TASK main\n", "TASK 1: =", 1000);
 }

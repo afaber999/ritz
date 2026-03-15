@@ -104,7 +104,6 @@ pub fn build(b: *std.Build) void {
         "none",
     });
     samples_build_cmd.setCwd(b.path("samples"));
-    samples_build_cmd.step.dependOn(b.getInstallStep());
 
     const samples_build_step = b.step("samples", "Build all sample firmware in samples/");
     samples_build_step.dependOn(&samples_build_cmd.step);
