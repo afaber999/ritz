@@ -133,14 +133,15 @@ zig build samples-qemu-run -Dsample=stand01
 If QEMU is not on PATH, provide it explicitly:
 
 ```bash
-zig build samples-qemu-run -Dsample=stand01 -Dqemu="C:/Program Files/qemu/qemu-system-riscv32.exe"
+zig build samples-qemu-run -Dsample=stand01 
+-Dqemu="C:/Program Files/qemu/qemu-system-riscv32.exe"
 ```
 
 ## Tests (Top Level)
 
 From the repository root, use the top-level test steps:
 
-```bash
+```bashzig build samples-qemu-run -Dsample=stand01 
 zig build tests
 zig build tests-run
 zig build tests-clean
@@ -185,5 +186,3 @@ At the `ritz>` prompt:
 
 
 .\zig-out\bin\ritz.exe -l 0x20000 -f .\tests\firmware\firmware.bin
-
-zig build samples-qemu-run -Dsample=trap

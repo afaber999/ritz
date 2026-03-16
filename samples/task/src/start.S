@@ -73,7 +73,6 @@ _task_exit:
 
 .align 4
 .global timervec
-.global timervec_test
 
 timervec:
   # Swap a0 with mscratch so a0 becomes the current task context pointer.
@@ -156,11 +155,5 @@ restore_context:
   lw t0, CTX_T0(a0)
   lw a0, CTX_A0(a0)
   mret
-
-timervec_test:
-  la t0, UART_BUF_REG_ADDR
-  addi t1, x0, '@'
-  sw t1, 0(t0)
-  ret
-
+  
 .size _start, .-_start

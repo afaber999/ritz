@@ -120,7 +120,7 @@ pub const Machine = struct {
     // Bit 2 = WFI (Wait for interrupt)
     // Bit 3 = halt request
     extraflags: u32 = 3,
-
+    system_starttime: i64 = 0,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -144,6 +144,7 @@ pub const Machine = struct {
             .out = out,
             .allocator = allocator,
             .mmio_devices = mmio_list,
+            .system_starttime = @as(i64, @intCast(@divTrunc(std.time.nanoTimestamp(), 100))),
         };
     }
 
@@ -173,7 +174,8 @@ pub const Machine = struct {
 
     pub fn next_cycle(self: *Machine) void {
         self.csr_cycle +%= 1;
-        const t: i64 = std.time.microTimestamp();
+        // use same clock base as QEMU, which are ticks of 0.1 microsecond (100 nanoseconds).
+        const t: i64 = @as(i64, @intCast(@divTrunc(std.time.nanoTimestamp(), 100))) - self.system_starttime;
         self.timerl = intCastCompat(u32, intCastCompat(u64, t) & 0xFFFF_FFFF);
         self.timerh = intCastCompat(u32, intCastCompat(u64, t) >> 32);
 
