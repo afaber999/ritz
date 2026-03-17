@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug",
+      "name": "Debug RITZ (tests firmware)",
       "type": "cppvsdbg",
       "request": "launch",
       "presentation": {
@@ -15,7 +15,6 @@
         "-s","0x00000000",
         "-l","0x20000",
         "-f", "${workspaceFolder}/tests/firmware/firmware.bin"
-        // "-f", "${workspaceFolder}/samples/zig-out/bin/hello.bin"
        ],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}",
@@ -23,6 +22,58 @@
       "preLaunchTask": "${defaultBuildTask}",
       "console": "integratedTerminal",
       "symbolSearchPath": "${workspaceFolder}/zig-out/bin/",
+    },
+    {
+      "name": "Debug RITZ (sample picker)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "presentation": {
+        "hidden": false,
+        "group": "Samples",
+        "order": 2
+      },
+      "program": "${workspaceFolder}/zig-out/bin/ritz.exe",
+      "args": [
+        "-s", "0x00000000",
+        "-l", "${input:sampleMemLen}",
+        "-f", "${workspaceFolder}/samples/zig-out/bin/${input:sampleFirmware}.bin"
+      ],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [],
+      "preLaunchTask": "zig build samples",
+      "console": "integratedTerminal",
+      "symbolSearchPath": "${workspaceFolder}/zig-out/bin/"
+    },
+    {
+      "name": "Guest Debug TASK (QEMU + GDB)",
+      "type": "cppdbg",
+      "request": "launch",
+      "presentation": {
+        "hidden": false,
+        "group": "Samples",
+        "order": 3
+      },
+      "program": "${workspaceFolder}/samples/zig-out/elf/task.elf",
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "${input:riscvGdbPath}",
+      "miDebuggerServerAddress": "localhost:1234",
+      "debugServerPath": "${input:qemuPath}",
+      "debugServerArgs": "-M virt -cpu rv32 -display none -serial stdio -monitor none -bios none -S -gdb tcp::1234 -kernel ${workspaceFolder}/samples/zig-out/elf/task.elf",
+      "serverStarted": "gdb|tcp::1234|1234",
+      "filterStdout": true,
+      "filterStderr": true,
+      "stopAtEntry": true,
+      "externalConsole": false,
+      "preLaunchTask": "zig build samples",
+      "setupCommands": [
+        {
+          "description": "Enable pretty printing",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
     },
     {
       "name": "Debug Attach",
@@ -36,6 +87,63 @@
       "preLaunchTask": "Zig: Run main",
       "internalConsoleOptions": "openOnFirstSessionStart",
       "processId": "${command:pickProcess}"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "sampleFirmware",
+      "type": "pickString",
+      "description": "Select sample firmware to launch in ritz",
+      "options": [
+        "hello",
+        "mandelbrot",
+        "prime",
+        "stand01",
+        "stand02",
+        "stand03",
+        "stand04",
+        "stand05",
+        "swi",
+        "task",
+        "torture",
+        "trap"
+      ],
+      "default": "task"
+    },
+    {
+      "id": "sampleMemLen",
+      "type": "pickString",
+      "description": "Select emulated memory length",
+      "options": [
+        "0x2000",
+        "0x8000",
+        "0x10000",
+        "0x20000"
+      ],
+      "default": "0x20000"
+    },
+    {
+      "id": "qemuPath",
+      "type": "pickString",
+      "description": "Select QEMU executable used for guest debugging",
+      "options": [
+        "qemu-system-riscv32",
+        "qemu-system-riscv32.exe",
+        "C:/Program Files/qemu/qemu-system-riscv32.exe"
+      ],
+      "default": "qemu-system-riscv32"
+    },
+    {
+      "id": "riscvGdbPath",
+      "type": "pickString",
+      "description": "Select RISC-V GDB executable",
+      "options": [
+        "riscv64-unknown-elf-gdb",
+        "riscv32-unknown-elf-gdb",
+        "riscv32-esp-elf-gdb",
+        "gdb"
+      ],
+      "default": "riscv64-unknown-elf-gdb"
     }
   ]
 }

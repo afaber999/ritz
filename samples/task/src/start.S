@@ -115,6 +115,7 @@ timervec:
   sw t0, CTX_MEPC(a0)
 
   csrr a1, mcause
+  csrr a2, mtval
   call handleTrap
 
 restore_context:

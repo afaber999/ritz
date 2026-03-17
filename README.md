@@ -145,7 +145,6 @@ From the repository root, use the top-level test steps:
 zig build tests
 zig build tests-run
 zig build tests-clean
-```
 
 These steps delegate to `tests/build.zig` internally and avoid shell-specific path issues.
 

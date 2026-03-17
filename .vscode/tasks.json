@@ -28,6 +28,29 @@
               "kind": "build",
               "isDefault": true
           }
+      },
+      {
+          "label": "zig build samples",
+          "type": "shell",
+          "command": "zig",
+          "args": [
+              "build",
+              "samples",
+              "--summary",
+              "all"
+          ],
+          "options": {
+              "cwd": "${workspaceRoot}"
+          },
+          "presentation": {
+              "echo": true,
+              "reveal": "always",
+              "focus": false,
+              "panel": "shared",
+              "showReuseMessage": true,
+              "clear": false
+          },
+          "problemMatcher": []
       }
   ]
 }

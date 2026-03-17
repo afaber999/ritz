@@ -4,7 +4,9 @@ extern const _task_exit: u8;
 const platform = @import("platform.zig");
 
 const TIMER_INTERVAL_TICKS = 20_000_000;
-const StackSize = 512;
+const StackSize = 2048;
+const StackGuardSize = 64;
+const StackGuardByte: u8 = 0xA5;
 const machine_timer_interrupt_mcause: u32 = 0x80000007;
 
 const TaskEntry = *const fn () callconv(.c) u32;
@@ -27,6 +29,8 @@ pub const putU64 = platform.putU64;
 pub const getMtimeCsr = platform.getMtimeCsr;
 pub const delayMs = platform.delayMs;
 
+
+// needs to be in line with offsets in start.S
 pub const TaskContext = extern struct {
     ra: u32 = 0,
     sp: u32 = 0,
@@ -68,6 +72,75 @@ export var current_task_index: u32 = 0;
 var task_contexts: [TaskCount]TaskContext = [_]TaskContext{.{}} ** TaskCount;
 var worker_task_stacks: [WorkerTaskCount][StackSize]u8 align(16) = [_][StackSize]u8{[_]u8{0} ** StackSize} ** WorkerTaskCount;
 
+fn fillStackGuard(stack: *[StackSize]u8) void {
+    @memset(stack[0..StackGuardSize], StackGuardByte);
+}
+
+fn stackGuardIntact(stack: *const [StackSize]u8) bool {
+    for (stack[0..StackGuardSize]) |byte| {
+        if (byte != StackGuardByte) return false;
+    }
+    return true;
+}
+
+fn workerTaskIndexFromContext(ctx: *TaskContext) ?usize {
+    for (worker_task_specs, 0..) |_, idx| {
+        if (&task_contexts[idx + 1] == ctx) return idx;
+    }
+    return null;
+}
+
+fn putHexDigit(nibble: u4) void {
+    const digit: u8 = if (nibble < 10)
+        @as(u8, '0') + @as(u8, nibble)
+    else
+        @as(u8, 'A') + (@as(u8, nibble) - 10);
+    putByte(digit);
+}
+
+fn putHex32(value: u32) void {
+    var shift: u5 = 28;
+    while (true) {
+        putHexDigit(@as(u4, @truncate(value >> shift)));
+        if (shift == 0) break;
+        shift -= 4;
+    }
+}
+
+fn reportTrap(current_ctx: *TaskContext, mcause: u32, mtval: u32) void {
+    putStr("\nTRAP mcause=0x");
+    putHex32(mcause);
+    putStr(" mepc=0x");
+    putHex32(current_ctx.mepc);
+    putStr(" mtval=0x");
+    putHex32(mtval);
+
+    if ((mcause & 0x8000_0000) == 0) {
+        putStr(" exception");
+    } else {
+        putStr(" interrupt");
+    }
+
+    if (mcause == 2) {
+        putStr(" illegal-instruction");
+    }
+
+    putStr("\n");
+}
+
+fn checkCurrentStackGuard(current_ctx: *TaskContext) void {
+    const worker_idx = workerTaskIndexFromContext(current_ctx) orelse return;
+    if (stackGuardIntact(&worker_task_stacks[worker_idx])) return;
+
+    putStr("\nSTACK OVERFLOW task=");
+    putU64(worker_idx + 2);
+    putStr(" sp=0x");
+    putHex32(current_ctx.sp);
+    putStr(" mepc=0x");
+    putHex32(current_ctx.mepc);
+    putStr("\n");
+}
+
 fn stackTop(stack: *[StackSize]u8) u32 {
     return @as(u32, @truncate(@intFromPtr(stack) + StackSize));
 }
@@ -103,14 +176,16 @@ export fn schedulerInit() callconv(.c) void {
     for (&task_contexts) |*ctx| ctx.* = .{};
 
     for (worker_task_specs, 0..) |spec, idx| {
+        fillStackGuard(&worker_task_stacks[idx]);
         initTaskContext(&task_contexts[idx + 1], spec.entry, &worker_task_stacks[idx]);
     }
 
     current_task_ctx = @as(u32, @truncate(@intFromPtr(&task_contexts[0])));
 }
 
-export fn handleTrap(current_ctx: *TaskContext, mcause: u32) callconv(.c) *TaskContext {
+export fn handleTrap(current_ctx: *TaskContext, mcause: u32, mtval: u32) callconv(.c) *TaskContext {
     syncCurrentTaskIndex(current_ctx);
+    checkCurrentStackGuard(current_ctx);
 
     if (mcause == machine_timer_interrupt_mcause) {
         platform.programTimerAfter(TIMER_INTERVAL_TICKS);
@@ -120,7 +195,7 @@ export fn handleTrap(current_ctx: *TaskContext, mcause: u32) callconv(.c) *TaskC
         return next;
     }
 
-    platform.putByte('!');
+    reportTrap(current_ctx, mcause, mtval);
     current_task_ctx = @as(u32, @truncate(@intFromPtr(current_ctx)));
     return current_ctx;
 }

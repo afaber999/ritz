@@ -138,6 +138,7 @@ fn addFirmware(
     run_selection: ?[]const u8,
     run_all_step: *std.Build.Step,
     qemu_run_all_step: *std.Build.Step,
+    qemu_debug_all_step: *std.Build.Step,
     lst_all_step: *std.Build.Step,
 ) bool {
     const root_source_path = b.fmt("{s}/src/main.zig", .{firmware_name});
@@ -150,7 +151,8 @@ fn addFirmware(
         .root_module = b.createModule(.{
             .root_source_file = b.path(module_root_source_path),
             .target = target,
-            .optimize = .ReleaseSmall,
+            //.code_model = optimize = .ReleaseSmall,
+            .optimize = .Debug,
             .strip = false,
             .pic = false,
         }),
@@ -159,6 +161,15 @@ fn addFirmware(
         firmware.addAssemblyFile(b.path(start_asm_path));
     }
     firmware.setLinkerScript(b.path(linker_script_path));
+
+    const elf_filename = b.fmt("{s}.elf", .{firmware_name});
+    const install_elf = b.addInstallFileWithDir(
+        firmware.getEmittedBin(),
+        .{ .custom = "elf" },
+        elf_filename,
+    );
+    b.getInstallStep().dependOn(&install_elf.step);
+    install_elf.step.dependOn(&firmware.step);
 
     var copy_bin_step: ?*std.Build.Step = null;
     if (gnu_objcopy) |objcopy_path| {
@@ -264,6 +275,37 @@ fn addFirmware(
         if (selected_for_run) {
             qemu_run_all_step.dependOn(&qemu_cmd.step);
         }
+
+        const qemu_debug_cmd = b.addSystemCommand(&.{
+            qemu_path,
+            "-M",
+            "virt",
+            "-cpu",
+            "rv32",
+            "-display",
+            "none",
+            "-serial",
+            "stdio",
+            "-monitor",
+            "none",
+            "-bios",
+            "none",
+            "-S",
+            "-gdb",
+            "tcp::1234",
+            "-kernel",
+        });
+        qemu_debug_cmd.addFileArg(firmware.getEmittedBin());
+        qemu_debug_cmd.step.dependOn(&firmware.step);
+
+        const qemu_debug_step_name = b.fmt("qemu-debug-{s}", .{firmware_name});
+        const qemu_debug_step_desc = b.fmt("Run {s} ELF in QEMU and wait for GDB attach", .{firmware_name});
+        const qemu_debug_step = b.step(qemu_debug_step_name, qemu_debug_step_desc);
+        qemu_debug_step.dependOn(&qemu_debug_cmd.step);
+
+        if (selected_for_run) {
+            qemu_debug_all_step.dependOn(&qemu_debug_cmd.step);
+        }
     }
 
     const lst_step_name = b.fmt("lst-{s}", .{firmware_name});
@@ -352,6 +394,7 @@ pub fn build(b: *std.Build) void {
 
     const run_all_step = b.step("run", "Run ritz_exe for all firmware bins");
     const qemu_run_all_step = b.step("qemu-run", "Run firmware ELFs in QEMU (all or -Dfirmware=<name>)");
+    const qemu_debug_all_step = b.step("qemu-debug", "Run firmware ELFs in QEMU paused for GDB attach (all or -Dfirmware=<name>)");
     const lst_all_step = b.step("lst", "Generate .lst files for all firmware ELFs");
     const clean_step = b.step("clean", "Delete all .zig-cache and zig-out directories");
 
@@ -393,6 +436,7 @@ pub fn build(b: *std.Build) void {
             run_selection,
             run_all_step,
             qemu_run_all_step,
+            qemu_debug_all_step,
             lst_all_step,
         );
         selected_firmware_found = selected_firmware_found or selected_match;
