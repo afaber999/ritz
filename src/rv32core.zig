@@ -318,7 +318,22 @@ pub fn RV32CoreType(comptime MachineType: type) type {
     }
 
     fn illegal(self: *Self) bool {
+        const insn_i32 = self.machine.get32(self.pc) catch 0;
+        const insn: u32 = @bitCast(insn_i32);
+        const mstatus = self.machine.csrRead(CSR_MSTATUS) orelse 0;
+        const mepc = self.machine.csrRead(CSR_MEPC) orelse 0;
+        const mcause = self.machine.csrRead(CSR_MCAUSE) orelse 0;
+        const mtvec = self.machine.csrRead(CSR_MTVEC) orelse 0;
+        const mie = self.machine.csrRead(CSR_MIE) orelse 0;
+        const mip = self.machine.csrRead(CSR_MIP) orelse 0;
+
         self.out.print("(illegal)\n", .{}) catch {};
+        self.out.print("  pc=0x{X:0>8} insn=0x{X:0>8}\n", .{ self.pc, insn }) catch {};
+        self.out.print("  mstatus=0x{X:0>8} mepc=0x{X:0>8} mcause=0x{X:0>8}\n", .{ mstatus, mepc, mcause }) catch {};
+        self.out.print("  mtvec=0x{X:0>8} mie=0x{X:0>8} mip=0x{X:0>8}\n", .{ mtvec, mie, mip }) catch {};
+        self.out.print("  ra=0x{X:0>8} sp=0x{X:0>8} gp=0x{X:0>8} tp=0x{X:0>8}\n", .{ self.regU32(1), self.regU32(2), self.regU32(3), self.regU32(4) }) catch {};
+        self.out.print("  a0=0x{X:0>8} a1=0x{X:0>8} a2=0x{X:0>8} a3=0x{X:0>8}\n", .{ self.regU32(10), self.regU32(11), self.regU32(12), self.regU32(13) }) catch {};
+        std.process.exit(1);
         return true;
     }
 

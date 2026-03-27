@@ -22,6 +22,7 @@ pub const CSR_MIP: u12 = 0x344;
 pub const CSR_MSCRATCH: u12 = 0x340;
 pub const CSR_MEPC: u12 = 0x341;
 pub const CSR_MCAUSE: u12 = 0x342;
+pub const CSR_MTVAL: u12 = 0x343;
 pub const CSR_SCOUNTEREN: u12 = 0x106;
 pub const CSR_CYCLE: u12 = 0xC00;
 pub const CSR_CYCLEH: u12 = 0xC80;
@@ -109,6 +110,7 @@ pub const Machine = struct {
     csr_mscratch: u32 = 0,
     csr_mepc: u32 = 0,
     csr_mcause: u32 = 0,
+    csr_mtval: u32 = 0,
     csr_scounteren: u32 = 0,
     csr_cycle: u64 = 0,
     timerh: u32 = 0,
@@ -164,6 +166,7 @@ pub const Machine = struct {
         self.csr_mscratch = 0;
         self.csr_mepc = 0;
         self.csr_mcause = 0;
+        self.csr_mtval = 0;
         self.csr_scounteren = 0;
         self.csr_cycle = 0;
         self.timerh = 0;
@@ -193,6 +196,7 @@ pub const Machine = struct {
             CSR_MSCRATCH => self.csr_mscratch,
             CSR_MEPC => self.csr_mepc,
             CSR_MCAUSE => self.csr_mcause,
+            CSR_MTVAL => self.csr_mtval,
             CSR_SCOUNTEREN => self.csr_scounteren,
             CSR_CYCLE => @truncate(self.csr_cycle),
             CSR_CYCLEH => @truncate(self.csr_cycle >> 32),
@@ -216,6 +220,7 @@ pub const Machine = struct {
             CSR_MSCRATCH => self.csr_mscratch = value,
             CSR_MEPC => self.csr_mepc = value,
             CSR_MCAUSE => self.csr_mcause = value,
+            CSR_MTVAL => self.csr_mtval = value,
             CSR_SCOUNTEREN => self.csr_scounteren = value,
             CSR_TIME => self.timerl = value,
             CSR_TIMEH => self.timerh = value,

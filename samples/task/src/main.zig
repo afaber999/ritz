@@ -40,7 +40,7 @@ fn main3() u32 {
 }
 
 fn main4() u32 {
-    runTaskLoop("START TASK main4\n", "LOOP TASK 4: =", 18200);
+    runTaskLoop("START TASK main4\n", "LOOP TASK 4: =", 4000);
 }
 
 

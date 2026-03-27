@@ -226,7 +226,6 @@ fn syncCurrentTaskIndex(current_ctx: *TaskContext) void {
     }
 }
 
-
 export fn handleTrap(current_ctx: *TaskContext, mcause: u32, mtval: u32) callconv(.c) *TaskContext {
     syncCurrentTaskIndex(current_ctx);
     checkCurrentStackGuard(current_ctx);
