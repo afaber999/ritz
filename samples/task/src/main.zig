@@ -1,5 +1,43 @@
 const tasks = @import("tasks.zig");
 
-export fn main() u32 {
-    tasks.taskStartScheduler();
+fn runTaskLoop(comptime banner: []const u8, comptime tick_prefix: []const u8, delay_ms: u32) noreturn {
+    tasks.putStr(banner);
+
+    while (true) {
+        tasks.enterCritical();
+        tasks.putStr(tick_prefix);
+        tasks.delayMs(100);
+        tasks.putU64(tasks.getMtimeCsr());
+        tasks.delayMs(100);
+        tasks.putStr("\n");
+        tasks.delayMs(100);
+        tasks.exitCritical();
+        tasks.delayMs(delay_ms);
+    }
 }
+
+fn main1() callconv(.c) u32 {
+    runTaskLoop("START TASK main1\n", "LOOP TASK 1: =", 1000);
+}
+
+fn main2() callconv(.c) u32 {
+    runTaskLoop("START TASK main2\n", "LOOP TASK 2: =", 200);
+}
+
+fn main3() callconv(.c) u32 {
+    runTaskLoop("START TASK main3\n", "LOOP TASK 3: =", 400);
+}
+
+fn main4() callconv(.c) u32 {
+    runTaskLoop("START TASK main4\n", "LOOP TASK 4: =", 18200);
+}
+
+
+export fn main() u32 {
+    _ = tasks.createTask(main1);
+    _ = tasks.createTask(main2);
+    _ = tasks.createTask(main3);
+    _ = tasks.createTask(main4);
+    tasks.startScheduler();
+}
+

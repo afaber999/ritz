@@ -35,7 +35,6 @@
 
   .global _start
   .type _start, @function
-  .extern schedulerInit
   .extern handleTrap
   .extern current_task_ctx
   .extern UART_BUF_REG_ADDR
@@ -60,11 +59,6 @@ clear_bss:
   beq x0, x0, clear_bss
 
 done_bss:
-  call schedulerInit
-  la t0, current_task_ctx
-  lw t1, 0(t0)
-  csrw mscratch, t1
-
   call main
 
   .global _task_exit

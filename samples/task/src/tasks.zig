@@ -10,20 +10,9 @@ const StackSize = 2048;
 const StackGuardSize = 64;
 const StackGuardByte: u8 = 0xA5;
 const machine_timer_interrupt_mcause: u32 = 0x80000007;
+const MaxTasks = 8;
 
 const TaskEntry = *const fn () callconv(.c) u32;
-const WorkerTaskSpec = struct {
-    entry: TaskEntry,
-};
-
-const all_task_specs = [_]WorkerTaskSpec{
-    .{ .entry = main1 },
-    .{ .entry = main2 },
-    .{ .entry = main3 },
-    .{ .entry = main4 },
-};
-
-const TaskCount = all_task_specs.len;
 
 pub const putByte = platform.putByte;
 pub const putStr = platform.putStr;
@@ -92,8 +81,12 @@ pub const TaskContext = extern struct {
 export var current_task_ctx: u32 = 0;
 export var current_task_index: u32 = 0;
 
-var task_contexts: [TaskCount]TaskContext = [_]TaskContext{.{}} ** TaskCount;
-var task_stacks: [TaskCount][StackSize]u8 align(16) = [_][StackSize]u8{[_]u8{0} ** StackSize} ** TaskCount;
+var task_contexts: [MaxTasks]TaskContext = [_]TaskContext{.{}} ** MaxTasks;
+var task_stacks: [MaxTasks][StackSize]u8 align(16) = [_][StackSize]u8{[_]u8{0} ** StackSize} ** MaxTasks;
+var task_entries: [MaxTasks]TaskEntry = undefined;
+var task_count: u32 = 0;
+
+
 
 fn fillStackGuard(stack: *[StackSize]u8) void {
     @memset(stack[0..StackGuardSize], StackGuardByte);
@@ -107,7 +100,9 @@ fn stackGuardIntact(stack: *const [StackSize]u8) bool {
 }
 
 fn taskIndexFromContext(ctx: *TaskContext) ?usize {
-    for (&task_contexts, 0..) |*c, idx| {
+    const count: usize = @intCast(task_count);
+    for (0..count) |idx| {
+        const c = &task_contexts[idx];
         if (c == ctx) return idx;
     }
     return null;
@@ -166,12 +161,14 @@ fn initTaskContext(ctx: *TaskContext, entry: *const fn () callconv(.c) u32, stac
 }
 
 fn nextTask() *TaskContext {
-    current_task_index = (current_task_index + 1) % TaskCount;
+    current_task_index = (current_task_index + 1) % task_count;
     return &task_contexts[current_task_index];
 }
 
 fn syncCurrentTaskIndex(current_ctx: *TaskContext) void {
-    for (&task_contexts, 0..) |*ctx, idx| {
+    const count: usize = @intCast(task_count);
+    for (0..count) |idx| {
+        const ctx = &task_contexts[idx];
         if (ctx == current_ctx) {
             current_task_index = @as(u32, @intCast(idx));
             return;
@@ -179,21 +176,6 @@ fn syncCurrentTaskIndex(current_ctx: *TaskContext) void {
     }
 }
 
-pub fn setupTimer() void {
-    platform.programTimerAfter(TIMER_INTERVAL_TICKS);
-}
-
-export fn schedulerInit() callconv(.c) void {
-    current_task_index = 0;
-    for (&task_contexts) |*ctx| ctx.* = .{};
-
-    fillAllStackGuards();
-    for (all_task_specs, 0..) |spec, idx| {
-        initTaskContext(&task_contexts[idx], spec.entry, &task_stacks[idx]);
-    }
-
-    current_task_ctx = @as(u32, @truncate(@intFromPtr(&task_contexts[0])));
-}
 
 export fn handleTrap(current_ctx: *TaskContext, mcause: u32, mtval: u32) callconv(.c) *TaskContext {
     syncCurrentTaskIndex(current_ctx);
@@ -225,43 +207,37 @@ fn enableTimerInterrupt() void {
     );
 }
 
-pub fn taskStartScheduler() noreturn {
+pub fn createTask(entry: TaskEntry) bool {
+    if (task_count >= MaxTasks) return false;
+    const idx: usize = @intCast(task_count);
+    task_entries[idx] = entry;
+    task_count += 1;
+    return true;
+}
+
+fn schedulerInit() void {
+    current_task_index = 0;
+    if (task_count == 0) {
+        putStr("\nNo tasks registered. Call createTask() before taskStartScheduler()\n");
+        while (true) {
+            asm volatile ("wfi");
+        }
+    }
+
+    const count: usize = @intCast(task_count);
+    for (0..count) |idx| task_contexts[idx] = .{};
+
+    fillAllStackGuards();
+    for (0..count) |idx| {
+        initTaskContext(&task_contexts[idx], task_entries[idx], &task_stacks[idx]);
+    }
+
+    current_task_ctx = @as(u32, @truncate(@intFromPtr(&task_contexts[0])));
+}
+
+pub fn startScheduler() noreturn {
     schedulerInit();
-    setupTimer();
+    platform.programTimerAfter(TIMER_INTERVAL_TICKS);
     enableTimerInterrupt();
     startFirstTask();
-}
-
-pub fn runTaskLoop(comptime banner: []const u8, comptime tick_prefix: []const u8, delay_ms: u32) noreturn {
-    putStr(banner);
-
-    while (true) {
-
-        enterCritical();
-        putStr(tick_prefix);
-        delayMs(100);
-        putU64(getMtimeCsr());
-        delayMs(100);
-        putStr("\n");
-        delayMs(100);
-        exitCritical();
-
-        delayMs(delay_ms);
-    }
-}
-
-export fn main1() u32 {
-    runTaskLoop("START TASK main1\n", "LOOP TASK 1: =", 1000);
-}
-
-export fn main2() u32 {
-    runTaskLoop("START TASK main2\n", "LOOP TASK 2: =", 200);
-}
-
-export fn main3() u32 {
-    runTaskLoop("START TASK main3\n", "LOOP TASK 3: =", 400);
-}
-
-export fn main4() u32 {
-    runTaskLoop("START TASK main4\n", "LOOP TASK 4: =", 18200);
 }
