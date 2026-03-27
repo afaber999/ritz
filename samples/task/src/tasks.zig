@@ -37,7 +37,32 @@ comptime {
     }
 }
 
-const TaskEntry = *const fn () callconv(.c) u32;
+const TaskEntry = *const fn () u32;
+
+pub const Mutex = struct {
+    state: u32 = 0,
+
+    pub fn tryLock(self: *Mutex) bool {
+        const irq = platform.irqSaveDisable();
+        defer platform.irqRestore(irq);
+
+        if (self.state != 0) return false;
+        self.state = 1;
+        return true;
+    }
+
+    pub fn lock(self: *Mutex) void {
+        while (!self.tryLock()) {
+            asm volatile ("nop");
+        }
+    }
+
+    pub fn unlock(self: *Mutex) void {
+        const irq = platform.irqSaveDisable();
+        defer platform.irqRestore(irq);
+        self.state = 0;
+    }
+};
 
 pub const putByte = platform.putByte;
 pub const putStr = platform.putStr;
@@ -177,7 +202,7 @@ fn fillAllStackGuards() void {
     }
 }
 
-fn initTaskContext(ctx: *TaskContext, entry: *const fn () callconv(.c) u32, stack: *[StackSize]u8) void {
+fn initTaskContext(ctx: *TaskContext, entry: *const fn () u32, stack: *[StackSize]u8) void {
     ctx.* = .{};
     ctx.ra = @as(u32, @truncate(@intFromPtr(&_task_exit)));
     ctx.sp = stackTop(stack);
