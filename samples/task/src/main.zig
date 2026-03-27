@@ -1,5 +1,11 @@
 const tasks = @import("tasks.zig");
 
+pub const task_config = struct {
+    pub const max_tasks = 4;
+    pub const timer_interval_ticks = 100_000;
+    pub const stack_size = 2048;
+};
+
 fn runTaskLoop(comptime banner: []const u8, comptime tick_prefix: []const u8, delay_ms: u32) noreturn {
     tasks.putStr(banner);
 

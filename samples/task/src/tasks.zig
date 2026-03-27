@@ -3,14 +3,39 @@ extern const _task_exit: u8;
 extern fn timervec() callconv(.c) void;
 extern fn startFirstTask() callconv(.c) noreturn;
 
+const root = @import("root");
 const platform = @import("platform.zig");
 
-const TIMER_INTERVAL_TICKS = 100_000;
-const StackSize = 2048;
+const default_timer_interval_ticks = 100_000;
+const TIMER_INTERVAL_TICKS = if (@hasDecl(root, "task_config") and @hasDecl(root.task_config, "timer_interval_ticks"))
+    root.task_config.timer_interval_ticks
+else
+    default_timer_interval_ticks;
+const default_stack_size = 2048;
+const StackSize = if (@hasDecl(root, "task_config") and @hasDecl(root.task_config, "stack_size"))
+    root.task_config.stack_size
+else
+    default_stack_size;
 const StackGuardSize = 64;
 const StackGuardByte: u8 = 0xA5;
 const machine_timer_interrupt_mcause: u32 = 0x80000007;
-const MaxTasks = 8;
+const default_max_tasks = 8;
+const MaxTasks = if (@hasDecl(root, "task_config"))
+    root.task_config.max_tasks
+else
+    default_max_tasks;
+
+comptime {
+    if (TIMER_INTERVAL_TICKS == 0) {
+        @compileError("task_config.timer_interval_ticks must be greater than zero");
+    }
+    if (StackSize <= StackGuardSize) {
+        @compileError("task_config.stack_size must be greater than StackGuardSize");
+    }
+    if (MaxTasks == 0) {
+        @compileError("task_config.max_tasks must be greater than zero");
+    }
+}
 
 const TaskEntry = *const fn () callconv(.c) u32;
 
