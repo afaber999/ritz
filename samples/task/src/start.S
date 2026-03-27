@@ -156,5 +156,20 @@ restore_context:
   lw t0, CTX_T0(a0)
   lw a0, CTX_A0(a0)
   mret
+
+.global startFirstTask
+.type startFirstTask, @function
+startFirstTask:
+  # Make mret legal/effective outside trap entry: return to M-mode with interrupts enabled.
+  li t2, 0x00001800      # mstatus.MPP mask
+  csrrc x0, mstatus, t2  # clear MPP
+  li t2, 0x00001880      # set MPP=3 (M-mode), MPIE=1
+  csrrs x0, mstatus, t2
+
+  la t0, current_task_ctx
+  lw a0, 0(t0)
+  j restore_context
+
+.size startFirstTask, .-startFirstTask
   
 .size _start, .-_start

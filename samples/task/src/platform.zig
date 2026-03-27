@@ -61,6 +61,23 @@ pub fn putU64(value: u64) void {
     }
 }
 
+fn putHexDigit(nibble: u4) void {
+    const digit: u8 = if (nibble < 10)
+        @as(u8, '0') + @as(u8, nibble)
+    else
+        @as(u8, 'A') + (@as(u8, nibble) - 10);
+    putByte(digit);
+}
+
+pub fn putHex32(value: u32) void {
+    var shift: u5 = 28;
+    while (true) {
+        putHexDigit(@as(u4, @truncate(value >> shift)));
+        if (shift == 0) break;
+        shift -= 4;
+    }
+}
+
 fn getTimeLow() u32 {
     return asm volatile (
         "csrr %[out], 0xC01"
@@ -110,4 +127,41 @@ pub fn programTimerAfter(delta: u64) void {
     clintMtimecmpHi().* = 0xFFFF_FFFF;
     clintMtimecmpLo().* = @as(u32, @truncate(mtimecmp));
     clintMtimecmpHi().* = @as(u32, @truncate(mtimecmp >> 32));
+}
+
+
+pub inline fn enableInterrupts() void {
+    asm volatile ("csrsi mstatus, 8"); // Set MIE bit to enable interrupts
+}
+
+pub inline fn disableInterrupts() void {
+    asm volatile ("csrci mstatus, 8"); // Clear MIE bit to disable interrupts
+}
+
+const IrqState = struct {
+    mie_was_enabled: bool,
+};
+
+
+pub fn irqSaveDisable() IrqState {
+    const mie_mask: u32 = 1 << 3;
+    const old = asm volatile (
+        "csrrc %[old], mstatus, %[mask]"
+        : [old] "=r" (-> u32),
+        : [mask] "r" (mie_mask),
+    );
+    return .{
+        .mie_was_enabled = (old & mie_mask) != 0,
+    };
+}
+
+pub fn irqRestore(state: IrqState) void {
+    if (!state.mie_was_enabled) return;
+
+    const mie_mask: u32 = 1 << 3;
+    asm volatile (
+        "csrrs x0, mstatus, %[mask]"
+        :
+        : [mask] "r" (mie_mask),
+    );
 }
