@@ -111,7 +111,7 @@ pub fn delayMs(n: u32) void {
     }
 }
 
-pub fn programTimerAfter(delta: u64) void {
+pub inline fn programTimerAfter(delta: u64) void {
     var mtime: u64 = 0;
     while (true) {
         const hi1 = clintMtimeHi().*;

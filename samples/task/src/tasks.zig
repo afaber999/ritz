@@ -69,7 +69,25 @@ pub const putStr = platform.putStr;
 pub const putU64 = platform.putU64;
 pub const putHex32 = platform.putHex32;
 pub const getMtimeCsr = platform.getMtimeCsr;
-pub const delayMs = platform.delayMs;
+
+pub fn delayMs(n: u32) void {
+    const ticks_per_ms: u64 = platform.TICKER_PER_SEC / 1000;
+    const time_slice_ticks: u64 = @as(u64, TIMER_INTERVAL_TICKS);
+    const start = getMtimeCsr();
+    const exp_time = start + (ticks_per_ms * @as(u64, n));
+
+    while (true) {
+        const now = getMtimeCsr();
+        if (now >= exp_time) break;
+
+        const remaining = exp_time - now;
+        if (remaining > time_slice_ticks and task_count > 1) {
+            taskYield();
+        } else {
+            asm volatile ("nop");
+        }
+    }
+}
 
 
 var taskCriticalNesting : u32 = 0;
@@ -130,6 +148,7 @@ pub const TaskContext = extern struct {
 
 export var current_task_ctx: u32 = 0;
 export var current_task_index: u32 = 0;
+var total_context_switches: u64 = 0;
 
 var task_contexts: [MaxTasks]TaskContext = [_]TaskContext{.{}} ** MaxTasks;
 var task_stacks: [MaxTasks][StackSize]u8 align(16) = [_][StackSize]u8{[_]u8{0} ** StackSize} ** MaxTasks;
@@ -234,6 +253,9 @@ export fn handleTrap(current_ctx: *TaskContext, mcause: u32, mtval: u32) callcon
         platform.programTimerAfter(TIMER_INTERVAL_TICKS);
         //platform.putByte('@');
         const next = nextTask();
+        if (next != current_ctx) {
+            total_context_switches += 1;
+        }
         current_task_ctx = @as(u32, @truncate(@intFromPtr(next)));
         return next;
     }
@@ -264,6 +286,33 @@ pub fn createTask(entry: TaskEntry) bool {
     return true;
 }
 
+pub fn getContextSwitchCount() u64 {
+    const irq = platform.irqSaveDisable();
+    defer platform.irqRestore(irq);
+    return total_context_switches;
+}
+
+pub fn taskYield() void {
+    if (task_count <= 1) return;
+
+    var baseline_switches: u64 = 0;
+    {
+        const irq = platform.irqSaveDisable();
+        defer platform.irqRestore(irq);
+        baseline_switches = total_context_switches;
+        // Ask CLINT for an immediate timer interrupt so the trap handler picks the next task.
+        platform.programTimerAfter(0);
+    }
+
+    while (true) {
+        asm volatile ("wfi");
+
+        const irq = platform.irqSaveDisable();
+        defer platform.irqRestore(irq);
+        if (total_context_switches != baseline_switches) break;
+    }
+}
+
 fn schedulerInit() void {
     current_task_index = 0;
     if (task_count == 0) {
@@ -276,6 +325,7 @@ fn schedulerInit() void {
     const count: usize = @intCast(task_count);
     for (0..count) |idx| task_contexts[idx] = .{};
 
+    total_context_switches = 0;
     fillAllStackGuards();
     for (0..count) |idx| {
         initTaskContext(&task_contexts[idx], task_entries[idx], &task_stacks[idx]);
