@@ -38,6 +38,10 @@ comptime {
 }
 
 const TaskEntry = *const fn () u32;
+const TaskState = enum(u8) {
+    ready,
+    blocked,
+};
 
 pub const Mutex = struct {
     state: u32 = 0,
@@ -71,20 +75,38 @@ pub const putHex32 = platform.putHex32;
 pub const getMtimeCsr = platform.getMtimeCsr;
 
 pub fn delayMs(n: u32) void {
+    if (n == 0) return;
+    if (task_count <= 1) {
+        platform.delayMs(n);
+        return;
+    }
+
     const ticks_per_ms: u64 = platform.TICKER_PER_SEC / 1000;
-    const time_slice_ticks: u64 = @as(u64, TIMER_INTERVAL_TICKS);
-    const start = getMtimeCsr();
-    const exp_time = start + (ticks_per_ms * @as(u64, n));
+    const wakeup_tick = getMtimeCsr() + (ticks_per_ms * @as(u64, n));
+
+    var self_idx: usize = 0;
+    {
+        const irq = platform.irqSaveDisable();
+        defer platform.irqRestore(irq);
+
+        self_idx = @as(usize, @intCast(current_task_index));
+        task_states[self_idx] = .blocked;
+        task_wakeup_ticks[self_idx] = wakeup_tick;
+
+        // Trigger a scheduling decision now, rather than waiting for the next periodic tick.
+        platform.programTimerAfter(0);
+    }
 
     while (true) {
-        const now = getMtimeCsr();
-        if (now >= exp_time) break;
+        asm volatile ("wfi");
 
-        const remaining = exp_time - now;
-        if (remaining > time_slice_ticks and task_count > 1) {
-            taskYield();
-        } else {
-            asm volatile ("nop");
+        const irq = platform.irqSaveDisable();
+        defer platform.irqRestore(irq);
+        // can fall through if another task woke us up early, 
+        // but that's fine since we check the tick count in the loop condition
+        if (task_states[self_idx] == .ready and getMtimeCsr() >= wakeup_tick) {
+            task_wakeup_ticks[self_idx] = 0;
+            break;
         }
     }
 }
@@ -153,6 +175,8 @@ var total_context_switches: u64 = 0;
 var task_contexts: [MaxTasks]TaskContext = [_]TaskContext{.{}} ** MaxTasks;
 var task_stacks: [MaxTasks][StackSize]u8 align(16) = [_][StackSize]u8{[_]u8{0} ** StackSize} ** MaxTasks;
 var task_entries: [MaxTasks]TaskEntry = undefined;
+var task_states: [MaxTasks]TaskState = [_]TaskState{.ready} ** MaxTasks;
+var task_wakeup_ticks: [MaxTasks]u64 = [_]u64{0} ** MaxTasks;
 var task_count: u32 = 0;
 
 
@@ -229,8 +253,39 @@ fn initTaskContext(ctx: *TaskContext, entry: *const fn () u32, stack: *[StackSiz
     ctx.mepc = @as(u32, @truncate(@intFromPtr(entry)));
 }
 
+fn wakeBlockedTasks(now: u64) void {
+    const count: usize = @intCast(task_count);
+    for (0..count) |idx| {
+        if (task_states[idx] != .blocked) continue;
+        if (now < task_wakeup_ticks[idx]) continue;
+        task_states[idx] = .ready;
+        task_wakeup_ticks[idx] = 0;
+    }
+}
+
+fn hasReadyTaskExcept(excluded_idx: usize) bool {
+    const count: usize = @intCast(task_count);
+    for (0..count) |idx| {
+        if (idx == excluded_idx) continue;
+        if (task_states[idx] == .ready) return true;
+    }
+    return false;
+}
+
 fn nextTask() *TaskContext {
-    current_task_index = (current_task_index + 1) % task_count;
+    const count: usize = @intCast(task_count);
+    var idx: usize = @intCast(current_task_index);
+
+    var attempt: usize = 0;
+    while (attempt < count) : (attempt += 1) {
+        idx = (idx + 1) % count;
+        if (task_states[idx] == .ready) {
+            current_task_index = @as(u32, @intCast(idx));
+            return &task_contexts[idx];
+        }
+    }
+
+    // No READY task found; continue current context.
     return &task_contexts[current_task_index];
 }
 
@@ -250,6 +305,7 @@ export fn handleTrap(current_ctx: *TaskContext, mcause: u32, mtval: u32) callcon
     checkCurrentStackGuard(current_ctx);
 
     if (mcause == machine_timer_interrupt_mcause) {
+        wakeBlockedTasks(getMtimeCsr());
         platform.programTimerAfter(TIMER_INTERVAL_TICKS);
         //platform.putByte('@');
         const next = nextTask();
@@ -282,6 +338,8 @@ pub fn createTask(entry: TaskEntry) bool {
     if (task_count >= MaxTasks) return false;
     const idx: usize = @intCast(task_count);
     task_entries[idx] = entry;
+    task_states[idx] = .ready;
+    task_wakeup_ticks[idx] = 0;
     task_count += 1;
     return true;
 }
@@ -299,6 +357,8 @@ pub fn taskYield() void {
     {
         const irq = platform.irqSaveDisable();
         defer platform.irqRestore(irq);
+        const self_idx: usize = @intCast(current_task_index);
+        if (!hasReadyTaskExcept(self_idx)) return;
         baseline_switches = total_context_switches;
         // Ask CLINT for an immediate timer interrupt so the trap handler picks the next task.
         platform.programTimerAfter(0);
@@ -326,6 +386,10 @@ fn schedulerInit() void {
     for (0..count) |idx| task_contexts[idx] = .{};
 
     total_context_switches = 0;
+    for (0..count) |idx| {
+        task_states[idx] = .ready;
+        task_wakeup_ticks[idx] = 0;
+    }
     fillAllStackGuards();
     for (0..count) |idx| {
         initTaskContext(&task_contexts[idx], task_entries[idx], &task_stacks[idx]);
